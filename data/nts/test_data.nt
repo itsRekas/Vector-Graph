@@ -1,0 +1,21 @@
+#test data_pipeline
+<http://example.org/person/john_doe> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Person> .
+<http://example.org/person/john_doe> <http://example.org/name> "John Doe" .
+<http://example.org/person/john_doe> <http://example.org/age> "35" .
+<http://example.org/person/john_doe> <http://example.org/email> "john.doe@email.com" .
+<http://example.org/person/john_doe> <http://example.org/occupation> "Software Engineer" .
+<http://example.org/person/jane_smith> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Person> .
+<http://example.org/person/jane_smith> <http://example.org/name> "Jane Smith" .
+<http://example.org/person/jane_smith> <http://example.org/age> "28" .
+<http://example.org/person/jane_smith> <http://example.org/email> "jane.smith@email.com" .
+<http://example.org/person/jane_smith> <http://example.org/occupation> "Data Scientist" .
+<http://example.org/person/mike_johnson> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Person> .
+<http://example.org/person/mike_johnson> <http://example.org/name> "Mike Johnson" .
+<http://example.org/person/mike_johnson> <http://example.org/age> "42" .
+<http://example.org/person/mike_johnson> <http://example.org/email> "mike.johnson@email.com" .
+<http://example.org/person/mike_johnson> <http://example.org/occupation> "Product Manager" .
+<http://example.org/person/sarah_wilson> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Person> .
+<http://example.org/person/sarah_wilson> <http://example.org/name> "Sarah Wilson" .
+<http://example.org/person/sarah_wilson> <http://example.org/age> "31" .
+<http://example.org/person/sarah_wilson> <http://example.org/email> "sarah.wilson@email.com" .
+<http://example.org/person/sarah_wilson> <http://example.org/occupation> "UX Designer" .

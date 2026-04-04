@@ -1,0 +1,222 @@
+{
+  "Q16": {
+    "k_10": {
+      "count": 10,
+      "time": 0.0
+    },
+    "k_50": {
+      "count": 50,
+      "time": 0.0
+    },
+    "k_100": {
+      "count": 100,
+      "time": 0.0
+    },
+    "k_1000": {
+      "count": 1000,
+      "time": 0.0
+    },
+    "comunica_sparql_file": {
+      "count": 1000,
+      "time": 0.010000000000000009
+    }
+  },
+  "Q17": {
+    "k_10": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_50": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_100": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_1000": {
+      "count": 34,
+      "time": 0.0
+    },
+    "comunica_sparql_file": {
+      "count": 34,
+      "time": 0.0
+    }
+  },
+  "Q18": {
+    "k_10": {
+      "count": 10,
+      "time": 0.0
+    },
+    "k_50": {
+      "count": 50,
+      "time": 0.0
+    },
+    "k_100": {
+      "count": 100,
+      "time": 0.0
+    },
+    "k_1000": {
+      "count": 1000,
+      "time": 0.0
+    },
+    "comunica_sparql_file": {
+      "count": 1000,
+      "time": 0.0
+    }
+  },
+  "Q19": {
+    "k_10": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_50": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_100": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_1000": {
+      "count": 0,
+      "time": 0.0
+    },
+    "comunica_sparql_file": {
+      "count": 0,
+      "time": 0.0
+    }
+  },
+  "Q20": {
+    "k_10": {
+      "count": 10,
+      "time": 0.0
+    },
+    "k_50": {
+      "count": 50,
+      "time": 0.010000000000000009
+    },
+    "k_100": {
+      "count": 100,
+      "time": 0.0
+    },
+    "k_1000": {
+      "count": 333,
+      "time": 0.0
+    },
+    "comunica_sparql_file": {
+      "count": 333,
+      "time": 0.0
+    }
+  },
+  "Q1": {
+    "k_10": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_50": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_100": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_1000": {
+      "count": 1,
+      "time": 0.0
+    },
+    "comunica_sparql_file": {
+      "count": 4,
+      "time": 0.0
+    }
+  },
+  "Q2": {
+    "k_10": {
+      "count": 0,
+      "time": 0.009999999999999981
+    },
+    "k_50": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_100": {
+      "count": 0,
+      "time": 0.010000000000000009
+    },
+    "k_1000": {
+      "count": 0,
+      "time": 0.12
+    },
+    "comunica_sparql_file": {
+      "count": 1,
+      "time": 0.0
+    }
+  },
+  "Q3": {
+    "k_10": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_50": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_100": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_1000": {
+      "count": 0,
+      "time": 0.0
+    },
+    "comunica_sparql_file": {
+      "count": 6,
+      "time": 0.0
+    }
+  },
+  "Q4": {
+    "k_10": {
+      "count": 0,
+      "time": 0.010000000000000009
+    },
+    "k_50": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_100": {
+      "count": 0,
+      "time": 0.010000000000000009
+    },
+    "k_1000": {
+      "count": 0,
+      "time": 0.02999999999999997
+    },
+    "comunica_sparql_file": {
+      "count": 14,
+      "time": 0.0
+    }
+  },
+  "Q7": {
+    "k_10": {
+      "count": 0,
+      "time": 0.0
+    },
+    "k_50": {
+      "count": 0,
+      "time": 0.010000000000000009
+    },
+    "k_100": {
+      "count": 0,
+      "time": 0.030000000000000027
+    },
+    "k_1000": {
+      "count": 0,
+      "time": 60
+    },
+    "comunica_sparql_file": {
+      "count": 59,
+      "time": 0.0
+    }
+  }
+}

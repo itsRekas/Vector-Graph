@@ -1,0 +1,159 @@
+# Sample GraphDB N-Triples file with relationships
+# Format: <subject> <predicate> <object> .
+
+# People and their basic information
+<http://example.org/person/john_doe> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Person> .
+<http://example.org/person/john_doe> <http://example.org/name> "John Doe" .
+<http://example.org/person/john_doe> <http://example.org/age> "35" .
+<http://example.org/person/john_doe> <http://example.org/email> "john.doe@email.com" .
+<http://example.org/person/john_doe> <http://example.org/occupation> "Software Engineer" .
+
+<http://example.org/person/jane_smith> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Person> .
+<http://example.org/person/jane_smith> <http://example.org/name> "Jane Smith" .
+<http://example.org/person/jane_smith> <http://example.org/age> "28" .
+<http://example.org/person/jane_smith> <http://example.org/email> "jane.smith@email.com" .
+<http://example.org/person/jane_smith> <http://example.org/occupation> "Data Scientist" .
+
+<http://example.org/person/mike_johnson> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Person> .
+<http://example.org/person/mike_johnson> <http://example.org/name> "Mike Johnson" .
+<http://example.org/person/mike_johnson> <http://example.org/age> "42" .
+<http://example.org/person/mike_johnson> <http://example.org/email> "mike.johnson@email.com" .
+<http://example.org/person/mike_johnson> <http://example.org/occupation> "Product Manager" .
+
+<http://example.org/person/sarah_wilson> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Person> .
+<http://example.org/person/sarah_wilson> <http://example.org/name> "Sarah Wilson" .
+<http://example.org/person/sarah_wilson> <http://example.org/age> "31" .
+<http://example.org/person/sarah_wilson> <http://example.org/email> "sarah.wilson@email.com" .
+<http://example.org/person/sarah_wilson> <http://example.org/occupation> "Software Engineer" .
+
+# Companies and organizations
+<http://example.org/company/techcorp> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Company> .
+<http://example.org/company/techcorp> <http://example.org/name> "TechCorp Inc." .
+<http://example.org/company/techcorp> <http://example.org/industry> "Technology" .
+<http://example.org/company/techcorp> <http://example.org/founded> "2010" .
+<http://example.org/company/techcorp> <http://example.org/employees> "500" .
+
+<http://example.org/company/dataflow> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Company> .
+<http://example.org/company/dataflow> <http://example.org/name> "DataFlow Solutions" .
+<http://example.org/company/dataflow> <http://example.org/industry> "Data Analytics" .
+<http://example.org/company/dataflow> <http://example.org/founded> "2015" .
+<http://example.org/company/dataflow> <http://example.org/employees> "150" .
+
+# Cities and locations
+<http://example.org/city/san_francisco> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/City> .
+<http://example.org/city/san_francisco> <http://example.org/name> "San Francisco" .
+<http://example.org/city/san_francisco> <http://example.org/state> "California" .
+<http://example.org/city/san_francisco> <http://example.org/country> "USA" .
+<http://example.org/city/san_francisco> <http://example.org/population> "874961" .
+
+<http://example.org/city/new_york> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/City> .
+<http://example.org/city/new_york> <http://example.org/name> "New York" .
+<http://example.org/city/new_york> <http://example.org/state> "New York" .
+<http://example.org/city/new_york> <http://example.org/country> "USA" .
+<http://example.org/city/new_york> <http://example.org/population> "8336817" .
+
+# Employment relationships
+<http://example.org/person/john_doe> <http://example.org/worksFor> <http://example.org/company/techcorp> .
+<http://example.org/person/jane_smith> <http://example.org/worksFor> <http://example.org/company/dataflow> .
+<http://example.org/person/mike_johnson> <http://example.org/worksFor> <http://example.org/company/techcorp> .
+<http://example.org/person/sarah_wilson> <http://example.org/worksFor> <http://example.org/company/techcorp> .
+
+# Location relationships
+<http://example.org/person/john_doe> <http://example.org/livesIn> <http://example.org/city/san_francisco> .
+<http://example.org/person/jane_smith> <http://example.org/livesIn> <http://example.org/city/new_york> .
+<http://example.org/person/mike_johnson> <http://example.org/livesIn> <http://example.org/city/san_francisco> .
+<http://example.org/person/sarah_wilson> <http://example.org/livesIn> <http://example.org/city/san_francisco> .
+
+<http://example.org/company/techcorp> <http://example.org/locatedIn> <http://example.org/city/san_francisco> .
+<http://example.org/company/dataflow> <http://example.org/locatedIn> <http://example.org/city/new_york> .
+
+# Personal relationships
+<http://example.org/person/john_doe> <http://example.org/knows> <http://example.org/person/mike_johnson> .
+<http://example.org/person/john_doe> <http://example.org/knows> <http://example.org/person/sarah_wilson> .
+<http://example.org/person/mike_johnson> <http://example.org/knows> <http://example.org/person/sarah_wilson> .
+<http://example.org/person/jane_smith> <http://example.org/friendOf> <http://example.org/person/john_doe> .
+
+# Projects and skills
+<http://example.org/project/ai_platform> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Project> .
+<http://example.org/project/ai_platform> <http://example.org/name> "AI Platform Development" .
+<http://example.org/project/ai_platform> <http://example.org/status> "Active" .
+<http://example.org/project/ai_platform> <http://example.org/startDate> "2024-01-15" .
+
+<http://example.org/project/data_pipeline> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Project> .
+<http://example.org/project/data_pipeline> <http://example.org/name> "Data Pipeline Optimization" .
+<http://example.org/project/data_pipeline> <http://example.org/status> "Completed" .
+<http://example.org/project/data_pipeline> <http://example.org/startDate> "2023-06-01" .
+<http://example.org/project/data_pipeline> <http://example.org/endDate> "2023-12-31" .
+
+# Project assignments
+<http://example.org/person/john_doe> <http://example.org/worksOn> <http://example.org/project/ai_platform> .
+<http://example.org/person/sarah_wilson> <http://example.org/worksOn> <http://example.org/project/ai_platform> .
+<http://example.org/person/jane_smith> <http://example.org/worksOn> <http://example.org/project/data_pipeline> .
+<http://example.org/person/mike_johnson> <http://example.org/manages> <http://example.org/project/ai_platform> .
+
+# Skills and technologies
+<http://example.org/skill/python> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Skill> .
+<http://example.org/skill/python> <http://example.org/name> "Python Programming" .
+<http://example.org/skill/machine_learning> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Skill> .
+<http://example.org/skill/machine_learning> <http://example.org/name> "Machine Learning" .
+<http://example.org/skill/javascript> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Skill> .
+<http://example.org/skill/javascript> <http://example.org/name> "JavaScript" .
+
+# Skill relationships
+<http://example.org/person/john_doe> <http://example.org/hasSkill> <http://example.org/skill/python> .
+<http://example.org/person/john_doe> <http://example.org/hasSkill> <http://example.org/skill/javascript> .
+<http://example.org/person/jane_smith> <http://example.org/hasSkill> <http://example.org/skill/python> .
+<http://example.org/person/jane_smith> <http://example.org/hasSkill> <http://example.org/skill/machine_learning> .
+<http://example.org/person/sarah_wilson> <http://example.org/hasSkill> <http://example.org/skill/javascript> .
+
+# Additional people and relationships
+<http://example.org/person/alex_chen> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Person> .
+<http://example.org/person/alex_chen> <http://example.org/name> "Alex Chen" .
+<http://example.org/person/alex_chen> <http://example.org/age> "29" .
+<http://example.org/person/alex_chen> <http://example.org/occupation> "DevOps Engineer" .
+<http://example.org/person/alex_chen> <http://example.org/worksFor> <http://example.org/company/techcorp> .
+<http://example.org/person/alex_chen> <http://example.org/livesIn> <http://example.org/city/san_francisco> .
+
+<http://example.org/person/maria_garcia> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Person> .
+<http://example.org/person/maria_garcia> <http://example.org/name> "Maria Garcia" .
+<http://example.org/person/maria_garcia> <http://example.org/age> "33" .
+<http://example.org/person/maria_garcia> <http://example.org/occupation> "Business Analyst" .
+<http://example.org/person/maria_garcia> <http://example.org/worksFor> <http://example.org/company/dataflow> .
+<http://example.org/person/maria_garcia> <http://example.org/livesIn> <http://example.org/city/new_york> .
+
+# More relationships
+<http://example.org/person/alex_chen> <http://example.org/knows> <http://example.org/person/john_doe> .
+<http://example.org/person/maria_garcia> <http://example.org/knows> <http://example.org/person/jane_smith> .
+<http://example.org/person/alex_chen> <http://example.org/collaboratesWith> <http://example.org/person/sarah_wilson> .
+
+# Educational background
+<http://example.org/university/stanford> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/University> .
+<http://example.org/university/stanford> <http://example.org/name> "Stanford University" .
+<http://example.org/university/mit> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/University> .
+<http://example.org/university/mit> <http://example.org/name> "MIT" .
+
+<http://example.org/person/john_doe> <http://example.org/graduatedFrom> <http://example.org/university/stanford> .
+<http://example.org/person/jane_smith> <http://example.org/graduatedFrom> <http://example.org/university/mit> .
+<http://example.org/person/mike_johnson> <http://example.org/graduatedFrom> <http://example.org/university/stanford> .
+
+# Team relationships
+<http://example.org/team/engineering> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Team> .
+<http://example.org/team/engineering> <http://example.org/name> "Engineering Team" .
+<http://example.org/team/design> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Team> .
+<http://example.org/team/design> <http://example.org/name> "Design Team" .
+
+<http://example.org/person/john_doe> <http://example.org/memberOf> <http://example.org/team/engineering> .
+<http://example.org/person/alex_chen> <http://example.org/memberOf> <http://example.org/team/engineering> .
+<http://example.org/person/sarah_wilson> <http://example.org/memberOf> <http://example.org/team/design> .
+<http://example.org/person/mike_johnson> <http://example.org/leads> <http://example.org/team/engineering> .
+
+# Technology stack
+<http://example.org/technology/docker> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Technology> .
+<http://example.org/technology/docker> <http://example.org/name> "Docker" .
+<http://example.org/technology/kubernetes> <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://example.org/Technology> .
+<http://example.org/technology/kubernetes> <http://example.org/name> "Kubernetes" .
+
+<http://example.org/project/ai_platform> <http://example.org/uses> <http://example.org/technology/docker> .
+<http://example.org/project/ai_platform> <http://example.org/uses> <http://example.org/technology/kubernetes> .
+<http://example.org/person/alex_chen> <http://example.org/hasExpertiseIn> <http://example.org/technology/docker> .
+<http://example.org/person/alex_chen> <http://example.org/hasExpertiseIn> <http://example.org/technology/kubernetes> .
