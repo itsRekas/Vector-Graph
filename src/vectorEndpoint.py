@@ -3,7 +3,7 @@ Vector Endpoint V4
 
 VERSION MAPPING:
 - VectorDatabase Implementation: lib.VectorDataBase.VectorDataBase (main implementation)
-- Collection Name: "lubm_graph_v1_normalized"
+- Collection Name: "version_5"
 - Embedding Strategy: S|P|O separate embeddings concatenated with normalization (3 × model_dim)
 - Embedding Dimension: 3 × model_dim (1152 for 384-dim model)
 - Model: all-MiniLM-L6-v2
@@ -12,6 +12,7 @@ VERSION MAPPING:
 
 from flask import Flask, request, jsonify
 import json
+import os
 from datetime import datetime
 from vector_endpoint.db.VectorDataBase import VectorDataBase
 import re
@@ -19,6 +20,7 @@ from urllib.parse import unquote
 
 
 app = Flask(__name__)
+VECTOR_COLLECTION_NAME = "version_5"
 
 # Initialize VectorDataBase
 # V4: Uses main VectorDataBase which embeds S, P, O separately, concatenates, and normalizes
@@ -403,7 +405,7 @@ def handle_pattern_query(json_data):
                     print(f"Using adaptive limit: {search_limit} (based on {len(values)} bindings)")
                 
                 vector_results = vdb.search(
-                    collection_name="lubm_graph_v1_normalized",
+                    collection_name=VECTOR_COLLECTION_NAME,
                     query_texts=search_queries,  # Batch: pass list of queries
                     limit=search_limit,
                     output_fields=["text"],
@@ -744,7 +746,7 @@ def sparql():
             search_results = []
             if vdb is not None:
                 try:
-                    collection_name = "lubm_graph_v1_normalized"
+                    collection_name = VECTOR_COLLECTION_NAME
                     vector_results = vdb.search(
                         collection_name=collection_name,
                         query_texts=query,

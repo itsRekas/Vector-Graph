@@ -77,3 +77,6 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+
+# VS Code / Cursor Workspace
+*.code-workspace

@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import math
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional, Tuple
 
-from pymilvus import Collection, CollectionSchema, DataType, FieldSchema
+from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, utility
 
 from catalog import Catalog, parse_nt_triple_line
 from vector_endpoint.db.VectorDataBase import VectorDataBase
@@ -102,7 +103,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("input_file", help="Path to NT data file")
     parser.add_argument("--catalog-out", default="catalog.pkl", help="Output pickle path")
-    parser.add_argument("--collection", default="lubm_graph_v1_normalized", help="Milvus collection name")
+    parser.add_argument("--collection", default="version_5", help="Milvus collection name")
     parser.add_argument("--database-name", default="lubm_db", help="Database label used by loader")
     parser.add_argument("--host", default="localhost", help="Milvus host")
     parser.add_argument("--port", type=int, default=19530, help="Milvus port")
@@ -116,8 +117,40 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-index", action="store_true", help="Skip Milvus index creation")
     parser.add_argument("--skip-load", action="store_true", help="Skip loading collection into memory")
     parser.add_argument("--catalog-only", action="store_true", help="Build catalog only without Milvus writes")
+    parser.add_argument(
+        "--reset-all-collections",
+        action="store_true",
+        help="Drop all existing Milvus collections before creating the target collection",
+    )
     parser.add_argument("--log", action="store_true", help="Verbose output")
     return parser.parse_args()
+
+
+def reset_all_collections(vdb: VectorDataBase, log: bool = False) -> int:
+    """Drop every existing collection and verify Milvus is empty."""
+    existing_collections = list(utility.list_collections())
+    if log:
+        print(f"Reset requested. Found {len(existing_collections)} collection(s) to drop.")
+
+    dropped_count = 0
+    for collection_name in existing_collections:
+        dropped = vdb.drop_collection(collection_name, log=log)
+        if not dropped:
+            raise RuntimeError(f"Failed to drop collection '{collection_name}' during reset")
+        dropped_count += 1
+
+    remaining_collections = list(utility.list_collections())
+    if remaining_collections:
+        raise RuntimeError(
+            "Reset failed. Remaining collections: "
+            + ", ".join(sorted(remaining_collections))
+        )
+
+    # Keep internal tracking aligned with Milvus after destructive reset.
+    vdb._collections = set()
+    if log:
+        print("Reset completed. Milvus has no collections.")
+    return dropped_count
 
 
 def main() -> int:
@@ -150,7 +183,18 @@ def main() -> int:
             target_embedding_dim=args.target_embedding_dim,
         )
         vdb.connect()
+        if args.reset_all_collections:
+            dropped_count = reset_all_collections(vdb, log=args.log)
+            print(f"Reset complete. Dropped {dropped_count} collection(s).")
         collection = ensure_collection(vdb, args.collection, log=args.log)
+
+    total_lines = sum(1 for _ in iter_nt_lines(input_path, max_lines=args.max_lines))
+    total_chunks = math.ceil(total_lines / args.chunk_size) if total_lines else 0
+    if args.log:
+        print(
+            f"Ingestion plan: total_lines={total_lines}, chunk_size={args.chunk_size}, "
+            f"chunks={total_chunks}"
+        )
 
     line_iter = iter_nt_lines(input_path, max_lines=args.max_lines)
     for chunk in chunked(line_iter, args.chunk_size):
@@ -162,6 +206,11 @@ def main() -> int:
 
         total_lines_processed += lines_processed
         total_catalog_triples += catalog_added
+        if args.log:
+            print(
+                f"Chunk {chunk_count}/{total_chunks}: "
+                f"lines={lines_processed}, catalog_triples={catalog_added}"
+            )
 
         if args.checkpoint_every_chunks > 0 and chunk_count % args.checkpoint_every_chunks == 0:
             catalog.save_pickle(checkpoint_path)

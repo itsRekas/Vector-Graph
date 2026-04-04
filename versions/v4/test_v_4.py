@@ -24,6 +24,7 @@ vdb.connect()
 # collection_name = "lubm_graph_v1"
 # collection_name = "lubm_graph"
 collection_name = "lubm_graph_v1_normalized"
+collection_name = "version_5"
 
 # Define collection schema with concatenated embedding field
 # Embedding dimension is 3 * target_embedding_dim (subject + predicate + object)
