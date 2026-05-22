@@ -3,9 +3,11 @@ from __future__ import annotations
 
 import argparse
 from typing import Any, Dict, List
+from pathlib import Path
 
 from pymilvus import utility
 
+from auto_k import CatalogKResolver, milvus_safe_k
 from vector_endpoint.db.VectorDataBase import VectorDataBase
 
 
@@ -26,15 +28,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="localhost", help="Milvus host")
     parser.add_argument("--port", type=int, default=19530, help="Milvus port")
     parser.add_argument("--embedding-model", default="all-MiniLM-L6-v2", help="Embedding model name")
-    parser.add_argument("--target-embedding-dim", type=int, default=384, help="Per-component model dim")
+    parser.add_argument("--target-embedding-dim", type=int, default=8, help="Per-component model dim")
     parser.add_argument("--query", default=DEFAULT_QUERY, help="Simple SPARQL query to test")
-    parser.add_argument("--k", type=int, default=10, help="Top-K results to fetch")
+    parser.add_argument("--k", type=int, default=None, help="Top-K results to fetch (default: catalog auto-k)")
+    parser.add_argument(
+        "--catalog-path",
+        default=str(Path(__file__).resolve().parents[1] / "catalog.pkl"),
+        help="Catalog pickle path used for auto-k when --k is omitted.",
+    )
     parser.add_argument("--log", action="store_true", help="Verbose VectorDataBase logs")
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    k_resolver = CatalogKResolver(catalog_path=Path(args.catalog_path)) if args.k is None else None
 
     vdb = VectorDataBase(
         database_name=args.database_name,
@@ -66,10 +74,17 @@ def main() -> int:
 
     print("\nRunning simple query:")
     print(args.query)
+    effective_k = args.k
+    if effective_k is None and k_resolver is not None:
+        # For this utility, default to broad cardinality estimate when no exact pattern parser is provided.
+        effective_k = k_resolver.auto_k_for_pattern(subject=None, predicate=None, object_value=None)
+    if effective_k is None:
+        effective_k = 10
+    effective_k = milvus_safe_k(effective_k)
     results = vdb.search(
         collection_name=args.collection,
         query_texts=args.query,
-        limit=args.k,
+        limit=effective_k,
         output_fields=["text"],
         log=args.log,
     )
@@ -86,7 +101,7 @@ def main() -> int:
         print("No matches found.")
         return 0
 
-    for idx, match in enumerate(matches[: args.k], start=1):
+    for idx, match in enumerate(matches[: effective_k], start=1):
         print(
             f"{idx}. score={match.get('score'):.6f} | "
             f"text={match.get('text')}"

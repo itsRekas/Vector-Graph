@@ -58,6 +58,14 @@ minio_data/
 catalog.pkl
 *.checkpoint.pkl
 
+# Matplotlib / plotting cache (auto-generated when running benchmark plots)
+.tmp_mpl/
+.matplotlib/
+
+# Generated benchmark & experiment outputs (JSON, CSV, PNG, logs)
+results/**
+**/results/**
+
 # Environment Variables
 .env
 .env.local

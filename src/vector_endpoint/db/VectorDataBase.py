@@ -10,7 +10,15 @@ import hashlib
 
 class VectorDataBase:
     
-    def __init__(self, database_name : str, host : str, port : int,  embedding_model : str, target_embedding_dim: int):
+    def __init__(
+        self,
+        database_name : str,
+        host : str,
+        port : int,
+        embedding_model : str,
+        target_embedding_dim: int,
+        dim_adjustment: str = "truncate",
+    ):
         self._database_name : str = database_name
         self._host : str = host
         self._port : str = str(port)
@@ -22,6 +30,9 @@ class VectorDataBase:
         
         self._collections : set[str] = set()
         self._embedding_dim : int  = target_embedding_dim
+        self._dim_adjustment: str = dim_adjustment.strip().lower()
+        self._model_output_dim: int = int(self._embedding_model.get_sentence_embedding_dimension())
+        self._validate_dim_configuration()
         
         # Public properties for schema creation
         # Concatenated embedding: subject + predicate + object = 3 * embedding_dim
@@ -30,6 +41,23 @@ class VectorDataBase:
         # Embedding cache for common patterns
         self._embedding_cache = {}
         self._cache_max_size = 1000  # Cache up to 1000 embeddings
+
+    def _validate_dim_configuration(self) -> None:
+        if self._embedding_dim <= 0:
+            raise ValueError(f"target_embedding_dim must be > 0, got {self._embedding_dim}")
+
+        if self._dim_adjustment != "truncate":
+            raise ValueError(
+                f"Unsupported dim_adjustment='{self._dim_adjustment}'. "
+                "Only 'truncate' is currently supported."
+            )
+
+        if self._embedding_dim > self._model_output_dim:
+            raise ValueError(
+                f"target_embedding_dim={self._embedding_dim} exceeds model output dim "
+                f"{self._model_output_dim} for truncate mode. "
+                f"Use <= {self._model_output_dim} or switch to a model with larger native dim."
+            )
     
     def clear_cache(self):
         """Clear the embedding cache. Useful for debugging or ensuring fresh embeddings."""
@@ -162,14 +190,24 @@ class VectorDataBase:
         }
         return normalized
 
-    # def _adjust_component_dim(self, embeddings: np.ndarray) -> np.ndarray:
-    #     """Truncate or zero-pad embeddings so every component matches self._component_dim."""
-    #     if embeddings.shape[1] == self._component_dim:
-    #         return embeddings
-    #     if embeddings.shape[1] > self._component_dim:
-    #         return embeddings[:, :self._component_dim]
-    #     pad_width = self._component_dim - embeddings.shape[1]
-    #     return np.pad(embeddings, ((0, 0), (0, pad_width)), mode='constant')
+    def _adjust_component_dim(self, embeddings: np.ndarray) -> np.ndarray:
+        """Coerce model embeddings to configured component dim using truncation."""
+        if embeddings.ndim != 2:
+            raise ValueError(f"Expected 2D embeddings, got shape={embeddings.shape}")
+
+        current_dim = embeddings.shape[1]
+        if current_dim == self._embedding_dim:
+            return embeddings
+
+        if self._dim_adjustment == "truncate":
+            if current_dim < self._embedding_dim:
+                raise ValueError(
+                    f"Cannot truncate from dim {current_dim} to larger dim {self._embedding_dim}. "
+                    "Use a smaller target_embedding_dim or a higher-dimension model."
+                )
+            return embeddings[:, : self._embedding_dim]
+
+        raise ValueError(f"Unsupported dim_adjustment='{self._dim_adjustment}'")
 
     def _encode_text_batch(self, texts: Sequence[str], normalize: bool = True) -> np.ndarray:
         """Encode a batch of strings and coerce to the configured component dimension.
@@ -214,6 +252,7 @@ class VectorDataBase:
             new_embeddings = np.asarray(new_embeddings, dtype=float)
             if new_embeddings.ndim == 1:
                 new_embeddings = new_embeddings.reshape(1, -1)
+            new_embeddings = self._adjust_component_dim(new_embeddings)
             
             # L2 normalize for cosine similarity (when storing data)
             if normalize:
@@ -802,9 +841,9 @@ class VectorDataBase:
                 for i, q in enumerate(triple_queries):
                     print(f"  Query {i+1} parsed as: S={q.get('subject')}, P={q.get('predicate')}, O={q.get('object')}, OType={q.get('object_type')}")
             
-            # Generate concatenated embeddings for each query (unnormalized for search)
-            # This allows the magnitude of query components to influence similarity
-            query_embeddings = self._embed_triple_batch(triple_queries, normalize=False)
+            # Normalize query component embeddings so query/search vectors are
+            # on the same scale as stored vectors (which are normalized at insert time).
+            query_embeddings = self._embed_triple_batch(triple_queries, normalize=True)
             
             # Use single embedding field (default to "embedding" if not specified)
             if field_name is None:

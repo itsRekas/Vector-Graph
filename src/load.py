@@ -108,7 +108,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="localhost", help="Milvus host")
     parser.add_argument("--port", type=int, default=19530, help="Milvus port")
     parser.add_argument("--embedding-model", default="all-MiniLM-L6-v2", help="SentenceTransformer model name")
-    parser.add_argument("--target-embedding-dim", type=int, default=384, help="Per-component embedding dimension")
+    parser.add_argument("--target-embedding-dim", type=int, default=8, help="Per-component embedding dimension")
+    parser.add_argument(
+        "--dim-adjustment",
+        default="truncate",
+        choices=["truncate"],
+        help="How to adapt model output to target dim (currently only truncate)",
+    )
     parser.add_argument("--chunk-size", type=int, default=100, help="Ingestion chunk size")
     parser.add_argument("--max-lines", type=int, default=None, help="Optional limit for quick runs")
     parser.add_argument("--checkpoint-every-chunks", type=int, default=0, help="Save checkpoint every N chunks (0 disables)")
@@ -181,6 +187,7 @@ def main() -> int:
             port=args.port,
             embedding_model=args.embedding_model,
             target_embedding_dim=args.target_embedding_dim,
+            dim_adjustment=args.dim_adjustment,
         )
         vdb.connect()
         if args.reset_all_collections:

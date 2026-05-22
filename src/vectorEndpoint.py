@@ -1,32 +1,33 @@
-"""
-Vector Endpoint V4
+"""Flask vector query endpoint for Comunica pattern requests.
 
-VERSION MAPPING:
-- VectorDatabase Implementation: lib.VectorDataBase.VectorDataBase (main implementation)
-- Collection Name: "version_5"
-- Embedding Strategy: S|P|O separate embeddings concatenated with normalization (3 × model_dim)
-- Embedding Dimension: 3 × model_dim (1152 for 384-dim model)
-- Model: all-MiniLM-L6-v2
-- Special Features: Supports k parameter forwarding from Comunica to vector endpoint
+Uses Milvus collection ``version_5`` with per-component S|P|O embeddings
+(``VectorDataBase``). Accepts JSON POST bodies on ``/vector`` with pattern,
+variables, optional value bindings, and optional ``k`` limit.
 """
 
 from flask import Flask, request, jsonify
 import json
 import os
+from typing import Optional
+from pathlib import Path
 from datetime import datetime
 from vector_endpoint.db.VectorDataBase import VectorDataBase
+from auto_k import CatalogKResolver, milvus_safe_k
+from adaptive_exp import filter_matches_to_rows, adaptive_batch_search
 import re
 from urllib.parse import unquote
 
 
 app = Flask(__name__)
 VECTOR_COLLECTION_NAME = "version_5"
+CATALOG_PATH = Path(os.getenv("VECTOR_CATALOG_PATH", Path(__file__).resolve().parents[1] / "catalog.pkl"))
+AUTO_K_RESOLVER = CatalogKResolver(catalog_path=CATALOG_PATH)
+if AUTO_K_RESOLVER.available:
+    print(f"Catalog auto-k enabled: {CATALOG_PATH}")
+else:
+    print(f"Catalog auto-k disabled: {AUTO_K_RESOLVER.error}")
 
-# Initialize VectorDataBase
-# V4: Uses main VectorDataBase which embeds S, P, O separately, concatenates, and normalizes
-# Using faster model: all-MiniLM-L6-v2 (faster than L12, slightly less accurate)
-# Note: all-MiniLM-L6-v2 outputs 384 dimensions, total embedding = 3 × 384 = 1152
-# For true dimension reduction, would need a different model or PCA projection
+# S, P, O embeddings concatenated and normalized (all-MiniLM-L6-v2, dim truncated at load).
 vdb = VectorDataBase(
     database_name="lubm_db",
     host="localhost", 
@@ -34,10 +35,10 @@ vdb = VectorDataBase(
     embedding_model="all-MiniLM-L6-v2",  # Faster alternative to paraphrase-multilingual-MiniLM-L12-v2
     # embedding_model="paraphrase-multilingual-MiniLM-L12-v2",  # Original (slower, more accurate)
     # embedding_model="BAAI/bge-large-en-v1.5",
-    target_embedding_dim=384  # Model outputs 384 dims (1152D total: 3×384)
+    target_embedding_dim=8  # Reduced default for per-component embedding dimension
 )
 
-# Connect to the vectr database
+# Connect to the vector database
 try:
     vdb.connect()
     print("Connected to Vector Database")
@@ -162,24 +163,12 @@ def create_sparql_binding_from_triple(triple_data, query_variables):
 
 
 def handle_pattern_query(json_data):
-    """Handle JSON pattern query from Comunica vector source"""
-    print(f"\n{'='*70}")
-    print("RECEIVED PATTERN QUERY (Vector Source)")
-    print(f"{'='*70}")
-    print(json.dumps(json_data, indent=2))
-    print(f"{'='*70}\n")
-    
+    """Handle JSON pattern query from Comunica vector source."""
     try:
         pattern = json_data.get('pattern', {})
         variables = json_data.get('vars', [])
-        values = json_data.get('values', [])  # Bindings from previous patterns
-        # Extract k parameter from Comunica (can be 'k' or 'limit')
+        values = json_data.get('values', [])
         requested_limit = json_data.get('k') or json_data.get('limit')
-        
-        print(f"Pattern: {pattern}")
-        print(f"Variables: {variables}")
-        print(f"VALUES rows: {len(values) if values else 0}")
-        print(f"Requested limit (k): {requested_limit}")
         
         # Extract subject, predicate, object from pattern FIRST
         subject = pattern.get('subject')
@@ -189,35 +178,7 @@ def handle_pattern_query(json_data):
         # If no values provided, create a single empty row to process
         if not values:
             values = [{}]
-            # Check if we have variables not in the pattern - this suggests Comunica should have sent values
-            pattern_vars_in_scope = set()
-            if isinstance(subject, str) and subject.startswith('?'):
-                pattern_vars_in_scope.add(subject.lstrip('?'))
-            elif isinstance(subject, dict) and subject.get('termType') == 'Variable':
-                pattern_vars_in_scope.add(subject.get('value', '').lstrip('?'))
-            elif isinstance(subject, str):
-                # Subject might be a variable name without "?" prefix
-                pattern_vars_in_scope.add(subject.lstrip('?'))
-            if isinstance(predicate, str) and predicate.startswith('?'):
-                pattern_vars_in_scope.add(predicate.lstrip('?'))
-            elif isinstance(predicate, dict) and predicate.get('termType') == 'Variable':
-                pattern_vars_in_scope.add(predicate.get('value', '').lstrip('?'))
-            elif isinstance(predicate, str):
-                pattern_vars_in_scope.add(predicate.lstrip('?'))
-            if isinstance(obj, str) and obj.startswith('?'):
-                pattern_vars_in_scope.add(obj.lstrip('?'))
-            elif isinstance(obj, dict) and obj.get('termType') == 'Variable':
-                pattern_vars_in_scope.add(obj.get('value', '').lstrip('?'))
-            elif isinstance(obj, str):
-                pattern_vars_in_scope.add(obj.lstrip('?'))
-            
-            requested_vars = {v.lstrip('?') for v in variables}
-            missing_vars = requested_vars - pattern_vars_in_scope
-            if missing_vars:
-                print(f"WARNING: Variables {missing_vars} are requested but not in pattern and no values provided.")
-                print(f"  This suggests Comunica should be sending joinBindings but isn't.")
-                print(f"  Pattern variables: {pattern_vars_in_scope}, Requested: {requested_vars}")
-        
+
         variable_aliases = set()
         for var in variables:
             if isinstance(var, str):
@@ -285,12 +246,7 @@ def handle_pattern_query(json_data):
         if object_var:
             pattern_variable_roles[object_var] = 'object'
 
-        # OPTIMIZATION: Batch processing - collect all search queries first, then batch search
-        # This is much faster than processing each value_row sequentially
-        print(f"\n{'='*70}")
-        print(f"BATCH PROCESSING: Collecting {len(values)} search queries for batch execution")
-        print(f"{'='*70}")
-        
+        # Batch vector search: build all query texts, then search in one or few calls.
         # Helper function to build a search query for a given value_row
         # Returns both the search query and the values needed for validation
         def build_search_query_for_row(value_row):
@@ -370,192 +326,107 @@ def handle_pattern_query(json_data):
         # Collect all search queries and validation info
         search_queries = []
         validation_info_list = []  # Store validation info for each query
-        for value_row_idx, value_row in enumerate(values):
+        for value_row in values:
             search_query, validation_info = build_search_query_for_row(value_row)
             search_queries.append(search_query)
             validation_info_list.append(validation_info)
-            print(f"Query {value_row_idx + 1}/{len(values)}: {search_query['text']}")
-        
-        # Perform BATCH vector search (all queries at once)
+
+        # Batch vector search
         all_results_rows = []
         if vdb is not None and len(search_queries) > 0:
             try:
-                print(f"\n{'='*70}")
-                print(f"Executing BATCH search for {len(search_queries)} queries...")
-                print(f"{'='*70}")
-                
-                # Use k parameter from Comunica if provided, otherwise use adaptive limit
+                def filter_fn(matches, query_idx):
+                    vinfo = (
+                        validation_info_list[query_idx]
+                        if query_idx < len(validation_info_list)
+                        else {}
+                    )
+                    return filter_matches_to_rows(
+                        matches,
+                        pattern_subject=subject,
+                        pattern_predicate=predicate,
+                        pattern_object=obj,
+                        validation_info=vinfo,
+                        variables=variables,
+                        pattern_variable_roles=pattern_variable_roles,
+                        value_row=values[query_idx],
+                        parse_rdf_triple=parse_rdf_triple,
+                        log=False,
+                    )
+
+                explicit_k = None
                 if requested_limit is not None:
                     try:
-                        search_limit = int(requested_limit)
-                        print(f"Using requested limit (k) from Comunica: {search_limit}")
+                        explicit_k = int(requested_limit)
                     except (ValueError, TypeError):
-                        print(f"Warning: Invalid limit value '{requested_limit}', using adaptive limit")
-                        requested_limit = None
-                
-                if requested_limit is None:
-                    # Adaptive limit: reduce limit when processing many bindings to speed up
-                    # Reduced further: 10-50 instead of 20-100 for faster results
-                    if len(values) > 10:
-                        search_limit = 10  # Minimal limit for many bindings
-                    elif len(values) > 5:
-                        search_limit = 25  # Reduced from 50
-                    else:
-                        search_limit = 50  # Reduced from 100 for fewer bindings
-                    print(f"Using adaptive limit: {search_limit} (based on {len(values)} bindings)")
-                
-                vector_results = vdb.search(
-                    collection_name=VECTOR_COLLECTION_NAME,
-                    query_texts=search_queries,  # Batch: pass list of queries
-                    limit=search_limit,
-                    output_fields=["text"],
-                    log=True
-                )
-                
-                print(f"Batch search completed. Processing {len(vector_results)} result sets...")
-                
-                # Process results for each value_row
-                for value_row_idx, value_row in enumerate(values):
-                    print(f"\n{'='*50}")
-                    print(f"Processing results for value_row {value_row_idx + 1}/{len(values)}")
-                    print(f"Value row: {value_row}")
-                    results_rows = []
-                    
-                    # Get validation info for this value_row
-                    validation_info = validation_info_list[value_row_idx] if value_row_idx < len(validation_info_list) else {}
-                    subject_value = validation_info.get("subject_value")
-                    predicate_value = validation_info.get("predicate_value")
-                    object_value = validation_info.get("object_value")
-                    subj_is_var = validation_info.get("subj_is_var", True)
-                    pred_is_var = validation_info.get("pred_is_var", True)
-                    obj_is_var = validation_info.get("obj_is_var", True)
-                    
-                    if value_row_idx < len(vector_results):
-                        matches = vector_results[value_row_idx].get("matches", [])
-                        print(f"Vector search returned {len(matches)} matches for value_row {value_row_idx + 1}")
-                    
-                        for match_idx, match in enumerate(matches):
-                            triple_text = match.get("text", "")
-                            triple_data = parse_rdf_triple(triple_text)
-                            if triple_data:
-                                # Validate exact matches for constant values
-                                subject_matched = True
-                                if isinstance(subject, dict) and subject.get('type') == 'iri':
-                                    if triple_data['subject'] != subject['value']:
-                                        subject_matched = False
-                                        print(f"  ❌ Match {match_idx + 1}: Subject mismatch - expected {subject['value']}, got {triple_data['subject']}")
-                                elif subject_value and not subj_is_var:
-                                    expected_subj = subject_value.lstrip('<').rstrip('>')
-                                    if triple_data['subject'] != expected_subj:
-                                        subject_matched = False
-                                        print(f"  ❌ Match {match_idx + 1}: Subject mismatch - expected {expected_subj}, got {triple_data['subject']}")
-                                
-                                if not subject_matched:
-                                    continue
-                                
-                                predicate_matched = True
-                                if isinstance(predicate, dict) and predicate.get('type') == 'iri':
-                                    if triple_data['predicate'] != predicate['value']:
-                                        predicate_matched = False
-                                        print(f"  ❌ Match {match_idx + 1}: Predicate mismatch")
-                                elif predicate_value and not pred_is_var:
-                                    expected_pred = predicate_value.lstrip('<').rstrip('>')
-                                    if triple_data['predicate'] != expected_pred:
-                                        predicate_matched = False
-                                        print(f"  ❌ Match {match_idx + 1}: Predicate mismatch")
-                                
-                                if not predicate_matched:
-                                    continue
-                                
-                                object_matched = True
-                                if isinstance(obj, dict):
-                                    if obj.get('type') == 'literal':
-                                        if triple_data['object'] != obj['value'] or triple_data['object_type'] != 'literal':
-                                            object_matched = False
-                                            print(f"  ❌ Match {match_idx + 1}: Object mismatch (literal)")
-                                    elif obj.get('type') == 'iri':
-                                        if triple_data['object'] != obj['value'] or triple_data['object_type'] != 'uri':
-                                            object_matched = False
-                                            print(f"  ❌ Match {match_idx + 1}: Object mismatch (iri)")
-                                elif object_value and not obj_is_var:
-                                    expected_obj = object_value.lstrip('<').rstrip('>')
-                                    if triple_data['object'] != expected_obj:
-                                        object_matched = False
-                                        print(f"  ❌ Match {match_idx + 1}: Object mismatch - expected {expected_obj}, got {triple_data['object']}")
-                                
-                                if not object_matched:
-                                    continue
-                                
-                                # Build the row with ALL requested variables
-                                row = {}
-                                for var in variables:
-                                    var_name = var.lstrip('?')
-                                    role = pattern_variable_roles.get(var_name)
-                                    
-                                    # First, try to get from current pattern
-                                    if role == 'subject':
-                                        row[var] = {"type": "uri", "value": triple_data['subject']}
-                                    elif role == 'predicate':
-                                        row[var] = {"type": "uri", "value": triple_data['predicate']}
-                                    elif role == 'object':
-                                        obj_type = 'literal' if triple_data['object_type'] == 'literal' else 'uri'
-                                        row[var] = {"type": obj_type, "value": triple_data['object']}
-                                    # If not in current pattern, get from value_row (previous patterns)
-                                    # Try both with and without "?" prefix, and case variations
-                                    elif var_name in value_row:
-                                        term_json = value_row[var_name]
-                                        if term_json is not None:
-                                            if isinstance(term_json, dict):
-                                                row[var] = {
-                                                    "type": term_json.get('type', 'uri'),
-                                                    "value": term_json.get('value')
-                                                }
-                                            else:
-                                                row[var] = {"type": "uri", "value": term_json}
-                                    elif var in value_row:  # Try with "?" prefix
-                                        term_json = value_row[var]
-                                        if term_json is not None:
-                                            if isinstance(term_json, dict):
-                                                row[var] = {
-                                                    "type": term_json.get('type', 'uri'),
-                                                    "value": term_json.get('value')
-                                                }
-                                            else:
-                                                row[var] = {"type": "uri", "value": term_json}
-                                    else:
-                                        # Variable not in pattern and not in value_row - debug this
-                                        print(f"DEBUG: Variable {var} (name: {var_name}) not found in pattern or value_row")
-                                        print(f"  pattern_variable_roles: {pattern_variable_roles}")
-                                        print(f"  value_row keys: {list(value_row.keys())}")
-                                        print(f"  Checking if {var_name} or {var} is in value_row: {var_name in value_row or var in value_row}")
-                                
-                                # Ensure we have at least one variable in the row
-                                if row:
-                                    print(f"✅ Match {match_idx + 1}: Built row with variables: {list(row.keys())}")
-                                    results_rows.append(row)
-                                else:
-                                    print(f"⚠️ Match {match_idx + 1}: Empty row created, skipping")
-                        print(f"Total results for value_row {value_row_idx + 1}: {len(results_rows)}")
-                    else:
-                        print(f"❌ No vector search results for value_row {value_row_idx + 1}")
-                    
-                    all_results_rows.extend(results_rows)
+                        explicit_k = None
+
+                if explicit_k is not None:
+                    effective_search_limit = milvus_safe_k(explicit_k)
+
+                    vector_results = vdb.search(
+                        collection_name=VECTOR_COLLECTION_NAME,
+                        query_texts=search_queries,
+                        limit=effective_search_limit,
+                        output_fields=["text"],
+                        log=False,
+                    )
+
+                    for value_row_idx, _value_row in enumerate(values):
+                        if value_row_idx < len(vector_results):
+                            matches = vector_results[value_row_idx].get("matches", [])
+                            rows, _ids = filter_fn(matches, value_row_idx)
+                            all_results_rows.extend(rows)
                 else:
-                    print(f"⚠️ No results returned for value_row {value_row_idx + 1}")
-                    
+                    # Per-query seed k from catalog, or fallback by binding count.
+                    seed_ks: list[int] = []
+                    stability_count_floors: list[Optional[int]] = []
+                    for sq in search_queries:
+                        seed = None
+                        floor: Optional[int] = None
+                        if AUTO_K_RESOLVER.available:
+                            floor = AUTO_K_RESOLVER.catalog_match_count(
+                                subject=sq.get("subject"),
+                                predicate=sq.get("predicate"),
+                                object_value=sq.get("object"),
+                                object_type=sq.get("object_type"),
+                            )
+                            seed = AUTO_K_RESOLVER.auto_k_for_pattern(
+                                subject=sq.get("subject"),
+                                predicate=sq.get("predicate"),
+                                object_value=sq.get("object"),
+                                object_type=sq.get("object_type"),
+                            )
+                        if seed is None:
+                            if len(values) > 10:
+                                seed = 10
+                            elif len(values) > 5:
+                                seed = 25
+                            else:
+                                seed = 50
+                        seed_ks.append(seed)
+                        stability_count_floors.append(floor)
+
+                    final_rows = adaptive_batch_search(
+                        vdb=vdb,
+                        collection_name=VECTOR_COLLECTION_NAME,
+                        search_queries=search_queries,
+                        seed_ks=seed_ks,
+                        filter_fn=filter_fn,
+                        log=False,
+                        stability_count_floors=stability_count_floors,
+                    )
+                    for rows in final_rows:
+                        all_results_rows.extend(rows)
+
             except Exception as e:
                 print(f"Error during batch vector search: {e}")
                 import traceback
                 traceback.print_exc()
-        else:
-            print("⚠️ Vector database not available or no search queries to process")
-        
         response = {
             "vars": variables,
             "rows": all_results_rows
         }
-        
-        print(f"Returning {len(all_results_rows)} rows")
         return jsonify(response), 200, {'Content-Type': 'application/json'}
     
     except Exception as e:
@@ -566,7 +437,9 @@ def handle_pattern_query(json_data):
 
 
 def log_request(endpoint_name):
-    """Helper function to log request details"""
+    """Log request details when FLASK_DEBUG is enabled."""
+    if not os.getenv('FLASK_DEBUG'):
+        return
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n{'='*50}")
     print(f"[{timestamp}] {endpoint_name}")
