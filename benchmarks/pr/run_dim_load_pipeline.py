@@ -14,11 +14,6 @@ from typing import List, Sequence
 
 from pymilvus import utility
 
-# Allow importing src modules while running from this folder.
-SRC_DIR = Path(__file__).resolve().parents[1] / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
 from vector_endpoint.db.VectorDataBase import VectorDataBase
 
 

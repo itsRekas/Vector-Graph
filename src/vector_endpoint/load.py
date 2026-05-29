@@ -8,7 +8,7 @@ from typing import Iterable, Iterator, List, Optional, Tuple
 
 from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, utility
 
-from catalog import Catalog, parse_nt_triple_line
+from vector_endpoint.catalog import Catalog, parse_nt_triple_line
 from vector_endpoint.db.VectorDataBase import VectorDataBase
 
 

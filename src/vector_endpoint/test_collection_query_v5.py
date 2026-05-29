@@ -7,7 +7,7 @@ from pathlib import Path
 
 from pymilvus import utility
 
-from auto_k import CatalogKResolver, milvus_safe_k
+from vector_endpoint.auto_k import CatalogKResolver, milvus_safe_k
 from vector_endpoint.db.VectorDataBase import VectorDataBase
 
 
@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--k", type=int, default=None, help="Top-K results to fetch (default: catalog auto-k)")
     parser.add_argument(
         "--catalog-path",
-        default=str(Path(__file__).resolve().parents[1] / "catalog.pkl"),
+        default=str(Path(__file__).resolve().parents[2] / "catalog.pkl"),
         help="Catalog pickle path used for auto-k when --k is omitted.",
     )
     parser.add_argument("--log", action="store_true", help="Verbose VectorDataBase logs")

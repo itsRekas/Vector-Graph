@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import io
 import pickle
 import re
 from typing import Dict, Iterable, Iterator, Optional, Tuple, Union
@@ -9,6 +10,22 @@ from typing import Dict, Iterable, Iterator, Optional, Tuple, Union
 
 TripleKey = Tuple[str, str, str]
 PairKey = Tuple[str, str]
+
+
+class _CompatUnpickler(pickle.Unpickler):
+    """Unpickler that loads catalogs saved before the package move.
+
+    Older ``catalog.pkl`` files reference the class as ``catalog.Catalog``
+    (when this module was a top-level ``catalog`` module). After moving it to
+    ``vector_endpoint.catalog`` I've remapped that legacy module path so existing
+    pickles keep loading. Pickles written by the current code already use the
+    new path and pass through unchanged.
+    """
+
+    def find_class(self, module: str, name: str):
+        if module == "catalog":
+            module = "vector_endpoint.catalog"
+        return super().find_class(module, name)
 
 
 @dataclass(frozen=True)
@@ -159,7 +176,7 @@ class Catalog:
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "Catalog":
-        loaded = pickle.loads(data)
+        loaded = _CompatUnpickler(io.BytesIO(data)).load()
         if isinstance(loaded, cls):
             # Backward compatibility for older pickle payloads.
             if not hasattr(loaded, "track_spo"):

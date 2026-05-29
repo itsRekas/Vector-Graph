@@ -3,14 +3,7 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-# Allow imports from vector-endpoint/src
-SRC = Path(__file__).resolve().parents[1] / "src"
-sys.path.insert(0, str(SRC))
-
-from pymilvus import Collection, connections, utility  # noqa: E402
+from pymilvus import Collection, connections, utility
 
 COLLECTION = "version_5"
 HOST = "localhost"
@@ -33,7 +26,7 @@ def main() -> int:
         print(f"\nWARNING: '{COLLECTION}' not found.")
         print("Load RLUBM with:")
         print(
-            "  python src/load.py data/nts/RLUBM_cleaned.nt "
+            "  python -m vector_endpoint.load data/nts/RLUBM_cleaned.nt "
             "--collection version_5 --target-embedding-dim 8 --catalog-out catalog.pkl --log"
         )
         return 2
@@ -50,7 +43,7 @@ def main() -> int:
 
     if n == 0:
         print("\nSTATUS: EMPTY — vector queries will return 0 rows.")
-        print("Re-run load.py on RLUBM_cleaned.nt, then restart vectorEndpoint.")
+        print("Re-run the loader on RLUBM_cleaned.nt, then restart the endpoint (python -m vector_endpoint.app).")
         return 3
 
     if dim != 24:

@@ -12,15 +12,15 @@ from typing import Optional
 from pathlib import Path
 from datetime import datetime
 from vector_endpoint.db.VectorDataBase import VectorDataBase
-from auto_k import CatalogKResolver, milvus_safe_k
-from adaptive_exp import filter_matches_to_rows, adaptive_batch_search
+from vector_endpoint.auto_k import CatalogKResolver, milvus_safe_k
+from vector_endpoint.adaptive_exp import filter_matches_to_rows, adaptive_batch_search
 import re
 from urllib.parse import unquote
 
 
 app = Flask(__name__)
 VECTOR_COLLECTION_NAME = "version_5"
-CATALOG_PATH = Path(os.getenv("VECTOR_CATALOG_PATH", Path(__file__).resolve().parents[1] / "catalog.pkl"))
+CATALOG_PATH = Path(os.getenv("VECTOR_CATALOG_PATH", Path(__file__).resolve().parents[2] / "catalog.pkl"))
 AUTO_K_RESOLVER = CatalogKResolver(catalog_path=CATALOG_PATH)
 if AUTO_K_RESOLVER.available:
     print(f"Catalog auto-k enabled: {CATALOG_PATH}")

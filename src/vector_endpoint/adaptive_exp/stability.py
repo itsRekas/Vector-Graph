@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Iterable, Optional
 
-from auto_k import milvus_safe_k
+from vector_endpoint.auto_k import milvus_safe_k
 
 
 def build_k_ladder(

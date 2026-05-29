@@ -6,17 +6,11 @@ import csv
 import json
 import re
 import subprocess
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-# Allow importing src modules while running from this folder.
-SRC_DIR = Path(__file__).resolve().parents[1] / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
-from auto_k import CatalogKResolver, milvus_safe_k
+from vector_endpoint.auto_k import CatalogKResolver, milvus_safe_k
 
 
 @dataclass(frozen=True)
@@ -28,7 +22,7 @@ class QueryPattern:
 
 
 def parse_args() -> argparse.Namespace:
-    root_dir = Path(__file__).resolve().parents[1]
+    root_dir = Path(__file__).resolve().parents[2]
     default_queries = Path(__file__).resolve().parent / "results" / "random_queries_3000.json"
     parser = argparse.ArgumentParser(
         description=(

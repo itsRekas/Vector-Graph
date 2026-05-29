@@ -5,7 +5,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from catalog import Catalog
+from vector_endpoint.catalog import Catalog
 
 
 def _normalize_uri(value: Optional[str]) -> Optional[str]:

@@ -18,8 +18,8 @@ The benchmark measures only the post-filter stage on the same retrieved candidat
 From `vector-endpoint` root:
 
 ```bash
-cd string_match_benchmark
-../.venv/bin/python run_string_vs_embedding_benchmark.py \
+cd benchmarks/string_match
+../../.venv/bin/python run_string_vs_embedding_benchmark.py \
   --collection version_5 \
   --query 'SELECT ?X WHERE { ?X <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://swat.cse.lehigh.edu/onto/univ-bench.owl#University> }' \
   --k 1000 \
@@ -35,7 +35,7 @@ This writes:
 ## Generate graph (line + mean/CI)
 
 ```bash
-../.venv/bin/python plot_string_vs_embedding.py \
+../../.venv/bin/python plot_string_vs_embedding.py \
   --input results/string_vs_embedding_<timestamp>.json
 ```
 
@@ -60,8 +60,8 @@ It generates large synthetic string pairs and compares:
 ### Run generic benchmark
 
 ```bash
-cd string_match_benchmark
-../.venv/bin/python run_generic_microbenchmark.py \
+cd benchmarks/string_match
+../../.venv/bin/python run_generic_microbenchmark.py \
   --num-records 1000000 \
   --constrained-parts o \
   --embedding-dim 128 \

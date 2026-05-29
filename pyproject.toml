@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vector-endpoint"
+version = "0.1.0"
+description = "Milvus-backed S|P|O embedding vector endpoint for Comunica SPARQL queries"
+requires-python = ">=3.11"
+dependencies = [
+    "flask",
+    "pymilvus",
+    "sentence-transformers",
+    "numpy",
+    "matplotlib",
+    "pandas",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["vector_endpoint*"]

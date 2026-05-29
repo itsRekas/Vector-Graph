@@ -4,7 +4,7 @@ Validates each Milvus hit against the triple pattern and bound values, then
 maps variables to URI/literal terms. Returns result rows plus the set of
 entity ids that passed validation (used as the adaptive k stability key).
 
-``parse_rdf_triple`` is injected to avoid a circular import with ``vectorEndpoint``.
+``parse_rdf_triple`` is injected to avoid a circular import with ``vector_endpoint.app``.
 """
 
 from __future__ import annotations

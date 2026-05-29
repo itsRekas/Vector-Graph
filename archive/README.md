@@ -4,10 +4,10 @@ Frozen legacy code. **Not part of the active pipeline.** Kept for reference only
 
 The active project lives at the repo root:
 
-- `src/` — the vector endpoint engine and Flask app (`vectorEndpoint.py`, `catalog.py`,
-  `auto_k.py`, `load.py`, `adaptive_exp/`, `vector_endpoint/db/VectorDataBase.py`)
-- `pr_benchmark/` — current precision/recall benchmark
-- `string_match_benchmark/` — string-vs-embedding benchmark
+- `src/vector_endpoint/` — the engine package and Flask app (`app.py`, `catalog.py`,
+  `auto_k.py`, `load.py`, `adaptive_exp/`, `db/VectorDataBase.py`)
+- `benchmarks/pr/` — current precision/recall benchmark
+- `benchmarks/string_match/` — string-vs-embedding benchmark
 
 ## Contents
 

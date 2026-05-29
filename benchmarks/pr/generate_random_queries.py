@@ -4,18 +4,12 @@ from __future__ import annotations
 import argparse
 import json
 import random
-import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
-# Allow importing src modules while running from this folder.
-SRC_DIR = Path(__file__).resolve().parents[1] / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
-from catalog import parse_nt_triple_line
+from vector_endpoint.catalog import parse_nt_triple_line
 
 
 @dataclass(frozen=True)
