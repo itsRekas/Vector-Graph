@@ -134,10 +134,10 @@ def run_loader_for_dim(dim: int, args: argparse.Namespace, out_dir: Path) -> Loa
             log=args.log,
         )
 
-        loader_script = SRC_DIR / "load.py"
         cmd: List[str] = [
             sys.executable,
-            str(loader_script),
+            "-m",
+            "vector_endpoint.load",
             args.input_file,
             "--collection",
             collection,
