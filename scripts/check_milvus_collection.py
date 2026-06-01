@@ -51,6 +51,16 @@ def main() -> int:
         return 4
 
     print("\nSTATUS: OK — collection has data and expected dim=24.")
+    try:
+        from vector_endpoint.db.VectorDataBase import VectorDataBase
+
+        print("\nStorage stamp (Milvus API):")
+        print(
+            f"  {VectorDataBase.milvus_storage_stamp(COLLECTION, host=HOST, port=PORT, default_embedding_dim=24)}"
+        )
+        print("  (full report: python scripts/measure_milvus_storage.py)")
+    except Exception as exc:
+        print(f"\nStorage stamp unavailable: {exc}")
     return 0
 
 

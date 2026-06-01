@@ -1,4 +1,13 @@
-from pymilvus import connections, utility, MilvusException, Collection, CollectionSchema, FieldSchema, DataType
+from pymilvus import (
+    Collection,
+    CollectionSchema,
+    DataType,
+    FieldSchema,
+    MilvusClient,
+    MilvusException,
+    connections,
+    utility,
+)
 from pymilvus.orm.mutation import MutationResult
 from sentence_transformers import SentenceTransformer
 from typing import List, Union, Optional, Sequence, Tuple
@@ -189,6 +198,103 @@ class VectorDataBase:
             "text": fallback_text,
         }
         return normalized
+
+    @staticmethod
+    def milvus_storage_stamp(
+        collection_name: str,
+        *,
+        host: str = "localhost",
+        port: int = 19530,
+        default_embedding_dim: int = 24,
+    ) -> str:
+        """Report Milvus collection storage via the Milvus API.
+
+        """
+        uri = f"http://{host}:{port}"
+        try:
+            client = MilvusClient(uri=uri)
+        except Exception as exc:
+            return f"collection={collection_name} error=connect_failed detail={exc}"
+
+        try:
+            existing = set(client.list_collections())
+        except Exception as exc:
+            return f"collection={collection_name} error=list_collections detail={exc}"
+
+        if collection_name not in existing:
+            return f"collection={collection_name} error=not_found known={sorted(existing)}"
+
+        try:
+            connections.connect(alias="default", host=host, port=str(port))
+        except Exception:
+            pass
+
+        try:
+            collection = Collection(collection_name)
+            collection.flush()
+            num_entities = int(collection.num_entities)
+        except MilvusException as exc:
+            return f"collection={collection_name} error=flush_or_count detail={exc}"
+        except Exception as exc:
+            return f"collection={collection_name} error=flush_or_count detail={exc}"
+
+        stats = client.get_collection_stats(collection_name) or {}
+        described = client.describe_collection(collection_name) or {}
+        row_count = int(stats.get("row_count", num_entities))
+
+        embedding_dim = default_embedding_dim
+        text_max_len = 1000
+        for field in described.get("fields", []):
+            name = field.get("name")
+            params = field.get("params", {}) or {}
+            if name == "embedding":
+                embedding_dim = int(params.get("dim", embedding_dim))
+            elif name == "text":
+                text_max_len = int(params.get("max_length", text_max_len))
+
+        embedding_bytes = embedding_dim * 4
+        id_bytes = 8
+        per_entity_schema_upper_bound = embedding_bytes + id_bytes + text_max_len
+
+        index_type = "unknown"
+        index_params: dict = {}
+        indexed_rows = row_count
+        try:
+            idx = client.describe_index(collection_name, "embedding")
+            index_type = str(idx.get("index_type", "unknown"))
+            index_params = dict(idx.get("params", {}) or {})
+            indexed_rows = int(idx.get("indexed_rows", row_count))
+        except Exception:
+            pass
+
+        segment_rows = 0
+        segment_mem_size = 0
+        try:
+            for seg in utility.get_query_segment_info(collection_name):
+                segment_rows += int(getattr(seg, "num_rows", 0) or 0)
+                segment_mem_size += int(getattr(seg, "mem_size", 0) or 0)
+        except Exception:
+            pass
+
+        return (
+            f"collection={collection_name} "
+            f"entities={num_entities} row_count={row_count} indexed_rows={indexed_rows} "
+            f"embedding_dim={embedding_dim} index={index_type} index_params={index_params} "
+            f"bytes_per_entity_embedding={embedding_bytes} "
+            f"bytes_per_entity_schema_upper_bound={per_entity_schema_upper_bound} "
+            f"total_embedding_bytes_est={num_entities * embedding_bytes} "
+            f"segment_rows={segment_rows} segment_mem_size_reported={segment_mem_size} "
+            f"milvus_stats={stats}"
+        )
+
+    def get_storage_stamp(self, collection_name: str) -> str:
+        """Instance wrapper using this object's Milvus host/port and embedding dim."""
+        return self.milvus_storage_stamp(
+            collection_name,
+            host=self._host,
+            port=int(self._port),
+            default_embedding_dim=self.embedding_dimension,
+        )
 
     def _adjust_component_dim(self, embeddings: np.ndarray) -> np.ndarray:
         """Coerce model embeddings to configured component dim using truncation."""

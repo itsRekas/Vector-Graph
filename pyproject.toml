@@ -16,6 +16,9 @@ dependencies = [
     "pandas",
 ]
 
+[project.optional-dependencies]
+turbovec = ["turbovec"]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["vector_endpoint*"]
