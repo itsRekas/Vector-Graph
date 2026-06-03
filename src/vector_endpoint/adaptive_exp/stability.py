@@ -1,16 +1,4 @@
-"""Pure helpers for the adaptive-k escalation strategy.
-
-- `build_k_ladder` produces the per-query k schedule (seed, seed*10, ...)
-  capped at the Milvus top-k limit with consecutive duplicates removed.
-- `jaccard` is a plain Jaccard index over two sets. Callers are responsible
-  for deciding what the "both empty" case means.
-- `is_stable` applies the stability rule described in the plan:
-    * `prev is None` (first round) -> not stable
-    * both empty                   -> not stable (never stop on empty-empty)
-    * sizes differ                 -> not stable
-    * exact non-empty equality     -> stable
-    * sizes match & jaccard >= thr -> stable
-"""
+"""Helpers for adaptive-k escalation (ladder, Jaccard, stability check)."""
 
 from __future__ import annotations
 
@@ -23,7 +11,7 @@ def build_k_ladder(
     seed_k: int,
     *,
     multipliers: Iterable[int] = (1, 10, 100, 1000),
-    milvus_max_topk: int = 16384,
+    milvus_max_topk: int = 200000,
 ) -> list[int]:
     """Return the ascending list of k values to try for a single query.
 

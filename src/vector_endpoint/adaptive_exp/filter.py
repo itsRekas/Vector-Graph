@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
+from vector_endpoint.auto_k import _normalize_literal
+
 
 def filter_matches_to_rows(
     matches: list[dict],
@@ -79,15 +81,27 @@ def filter_matches_to_rows(
         object_matched = True
         if isinstance(obj, dict):
             if obj.get('type') == 'literal':
-                if triple_data['object'] != obj['value'] or triple_data['object_type'] != 'literal':
+                expected_lit = _normalize_literal(obj.get('value'))
+                if (
+                    triple_data['object_type'] != 'literal'
+                    or _normalize_literal(triple_data['object']) != expected_lit
+                ):
                     object_matched = False
             elif obj.get('type') == 'iri':
                 if triple_data['object'] != obj['value'] or triple_data['object_type'] != 'uri':
                     object_matched = False
         elif object_value and not obj_is_var:
-            expected_obj = object_value.lstrip('<').rstrip('>')
-            if triple_data['object'] != expected_obj:
-                object_matched = False
+            if validation_info.get("object_type") == "literal":
+                expected_obj = _normalize_literal(object_value)
+                if (
+                    triple_data['object_type'] != 'literal'
+                    or _normalize_literal(triple_data['object']) != expected_obj
+                ):
+                    object_matched = False
+            else:
+                expected_obj = object_value.lstrip('<').rstrip('>')
+                if triple_data['object'] != expected_obj:
+                    object_matched = False
 
         if not object_matched:
             continue
@@ -130,5 +144,11 @@ def filter_matches_to_rows(
                         row[var] = {"type": "uri", "value": term_json}
         if row:
             results_rows.append(row)
+
+    # Fully bound patterns: Comunica may send vars=[] (ASK-style existence check).
+    # Vector search can still find the triple, but no variables => empty row dict.
+    # Return one empty binding so the join engine can continue on success.
+    if not variables and filtered_ids and not results_rows:
+        results_rows.append({})
 
     return results_rows, filtered_ids

@@ -58,7 +58,7 @@ def scaled_k_from_count(count: int, *, scale: float = 1.2, min_k: int = 10) -> i
     return max(min_k, int(math.ceil(max(0, count) * scale)))
 
 
-def milvus_safe_k(k: int, *, milvus_max_topk: int = 16384) -> int:
+def milvus_safe_k(k: int, *, milvus_max_topk: int = 200000) -> int:
     if k <= milvus_max_topk:
         return k
     return milvus_max_topk

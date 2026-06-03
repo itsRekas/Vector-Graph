@@ -38,8 +38,9 @@ A dimension passes when both `avg_precision` and `avg_recall` are at least `--ac
 
 - `--dimensions` is the **per-component** embedding dim: S, P and O are each
   truncated to this size and concatenated, so the stored vector is `3 × dim`.
-- Default is `8` (→ 24-dim vectors), matching the production endpoint
-  (`src/vector_endpoint/app.py`, `target_embedding_dim=8`).
+- Production endpoint uses `384` (→ 1152-dim stored vectors) in
+  `src/vector_endpoint/app.py`. Dim sweeps can still use smaller values
+  (e.g. `8` → 24-dim) via `--dimensions` on `dim_benchmark` only.
 - `384` is the model-native max for `all-MiniLM-L6-v2`; you can sweep any value
   `<= 384` (e.g. `--dimensions 8,16,32,64,128,256,384`).
 - Dim adjustment mode is controlled by `--dim-adjustment` and defaults to `truncate`.
@@ -143,6 +144,91 @@ Outputs:
 
 - `results/vector_dim_pr_<timestamp>_precision_recall_vs_dim.png`
 - `results/vector_dim_pr_<timestamp>_bucket_precision_recall.png`
+
+## LUBM Q1–Q14 join benchmark (`run_lubm_pr_benchmark.py`)
+
+For the **official LUBM join queries** in `RLUBM/Query_Types.txt`, use
+`run_lubm_pr_benchmark.py`. Unlike the dim sweep above (single-pattern Milvus
+search + post-filter), this script runs **end-to-end** queries via
+`comunica-vector` and compares binding sets against `comunica-sparql-file`
+ground truth.
+
+### Prerequisites
+
+1. **vector-endpoint** running with RLUBM loaded (`version_5`, dim 384 / 1152 stored).
+   Milvus must use `configs/milvus.yaml` (`common.topKLimit: 200000`) — see the
+   root `README.md` Milvus section.
+
+```bash
+cd vector-endpoint
+.venv/bin/python -m vector_endpoint.app
+```
+
+2. **Comunica CLIs** on PATH (`comunica-vector`, `comunica-sparql-file`).
+
+### Run all Q1–Q14 (auto-k from expected result counts)
+
+From `vector-endpoint/benchmarks/pr`:
+
+```bash
+../../.venv/bin/python run_lubm_pr_benchmark.py \
+  --rdf-file ../../data/nts/RLUBM_cleaned.nt \
+  --vector-endpoint http://localhost:2222/vector \
+  --write-queries-json results/lubm_q1_q14.json \
+  --out-dir results
+```
+
+**Catalog-based k (default when `--k` is omitted):** parses each BGP in the
+query, looks up `catalog.pkl` match counts, and sets `seed_k = ceil(count ×
+--catalog-k-scale)` per pattern (default scale `1.2`, min `--catalog-min-k`).
+Baseline `LIMIT` is the **maximum ladder top** across all BGPs (not the final
+tuple count from `Query_Types.txt`). JSON output includes
+`pattern_catalog_plans` per query.
+
+Requires `catalog.pkl` from the same load as Milvus (`--catalog-path` defaults
+to `vector-endpoint/catalog.pkl`).
+
+### Adaptive k (catalog seed + multipliers per BGP)
+
+Omits `-k` from `comunica-vector`. Each endpoint POST uses catalog seed k for
+that BGP pattern, then `adaptive_batch_search` with
+`--adaptive-multipliers` / `--adaptive-jaccard` (forwarded in the JSON body).
+Baseline `LIMIT` uses the max ladder top over all BGPs in the query.
+
+```bash
+../../.venv/bin/python run_lubm_pr_benchmark.py \
+  --use-adaptive \
+  --adaptive-multipliers 1,10,100,1000 \
+  --adaptive-jaccard 0.99 \
+  --out-dir results
+```
+
+Optional: `--k 500` overrides catalog seed for every BGP in the plan (baseline
+and vector when adaptive).
+
+### Quick smoke (small queries only)
+
+```bash
+../../.venv/bin/python run_lubm_pr_benchmark.py \
+  --query-nums 1,2,3,4,9,11,12,13 \
+  --max-expected 200 \
+  --out-dir results
+```
+
+### Fixed k for every query
+
+```bash
+../../.venv/bin/python run_lubm_pr_benchmark.py \
+  --k 100 \
+  --query-nums 1,2,3 \
+  --out-dir results
+```
+
+Outputs:
+
+- `results/lubm_pr_<timestamp>.json`
+- `results/lubm_pr_<timestamp>_summary.csv`
+- `results/lubm_pr_<timestamp>_per_query.csv`
 
 ## False-case debug export
 

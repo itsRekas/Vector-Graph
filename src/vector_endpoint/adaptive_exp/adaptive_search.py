@@ -1,8 +1,7 @@
 """Adaptive k-escalation orchestrator.
 
-Runs a per-query k-ladder against a batched vector database. Each round, the
-queries that are still "active" (not yet stable) are grouped by their current
-k so we can issue one `vdb.search` call per group and preserve batching.
+Runs a per-query k-ladder against a batched vector database. Each round,
+active queries are grouped by their current k for one `vdb.search` per group.
 
 The stability rule lives in `stability.is_stable` and is applied to the
 post-filtered Milvus id set returned by `filter_fn`.
@@ -49,7 +48,7 @@ def adaptive_batch_search(
     multipliers: Iterable[int] = (1, 10, 100, 1000),
     jaccard_threshold: float = 0.99,
     output_fields: Iterable[str] = ("text",),
-    milvus_max_topk: int = 16384,
+    milvus_max_topk: int = 200000,
     log: bool = False,
     stability_count_floors: Optional[list[Optional[int]]] = None,
 ) -> list[list[dict]]:
@@ -69,11 +68,10 @@ def adaptive_batch_search(
         output_fields: fields requested from `vdb.search`.
         milvus_max_topk: cap used when building ladders.
         log: when True, prints per-round stability diagnostics.
-        stability_count_floors: optional per-query catalog lower bound C on the
-            size of the post-filtered id set. While ``len(S) < C``, stability
-            does not stop escalation (avoids false plateaus). When the entry is
-            ``None``, that query uses stability only (legacy behavior). When
-            the argument is omitted or ``None``, all queries use stability only.
+        stability_count_floors: optional per-query catalog lower bound on the
+            post-filtered id set size. Escalation continues while below the
+            floor even if Jaccard is stable. Per-query ``None`` skips the floor.
+            Omit the argument entirely to disable floors for all queries.
 
     Returns:
         `final_rows[i]` is the list of result rows for query `i` at the round

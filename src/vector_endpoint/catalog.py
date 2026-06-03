@@ -15,11 +15,8 @@ PairKey = Tuple[str, str]
 class _CompatUnpickler(pickle.Unpickler):
     """Unpickler that loads catalogs saved before the package move.
 
-    Older ``catalog.pkl`` files reference the class as ``catalog.Catalog``
-    (when this module was a top-level ``catalog`` module). After moving it to
-    ``vector_endpoint.catalog`` I've remapped that legacy module path so existing
-    pickles keep loading. Pickles written by the current code already use the
-    new path and pass through unchanged.
+    Older ``catalog.pkl`` files reference ``catalog.Catalog`` (top-level module).
+    Remaps that module path to ``vector_endpoint.catalog`` on load.
     """
 
     def find_class(self, module: str, name: str):

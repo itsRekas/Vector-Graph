@@ -12,10 +12,89 @@ from typing import Optional
 from pathlib import Path
 from datetime import datetime
 from vector_endpoint.db.VectorDataBase import VectorDataBase
-from vector_endpoint.auto_k import CatalogKResolver, milvus_safe_k
+from vector_endpoint.auto_k import CatalogKResolver, milvus_safe_k, _normalize_literal
 from vector_endpoint.adaptive_exp import filter_matches_to_rows, adaptive_batch_search
 import re
 from urllib.parse import unquote
+
+
+def _adaptive_multipliers_from_request(json_data: dict) -> tuple[int, ...]:
+    """Ladder multipliers from POST body or VECTOR_ADAPTIVE_MULTIPLIERS env."""
+    raw = json_data.get("adaptive_multipliers")
+    if raw is None:
+        raw = os.getenv("VECTOR_ADAPTIVE_MULTIPLIERS", "1,10,100,1000")
+    if isinstance(raw, (list, tuple)):
+        values = [int(m) for m in raw if int(m) > 0]
+    else:
+        values = [int(tok.strip()) for tok in str(raw).split(",") if tok.strip()]
+    if not values:
+        return (1, 10, 100, 1000)
+    return tuple(values)
+
+
+def _adaptive_jaccard_from_request(json_data: dict) -> float:
+    raw = json_data.get("adaptive_jaccard")
+    if raw is None:
+        raw = os.getenv("VECTOR_ADAPTIVE_JACCARD", "0.99")
+    return float(raw)
+
+
+def _join_bound_min_k() -> int:
+    """Floor k for join-extension POSTs (bound subject/object, open variable).
+
+    Catalog count can be 1 while embedding rank of the true triple is much
+    lower (e.g. ``?X telephone ?Y`` with bound ``X``).
+    """
+    return max(1, int(os.getenv("VECTOR_JOIN_BOUND_MIN_K", "512")))
+
+
+def _search_query_has_bound_constant(sq: dict) -> bool:
+    val = sq.get("subject")
+    if isinstance(val, str) and val and not val.startswith("?"):
+        return True
+    val = sq.get("object")
+    if isinstance(val, str) and val and not val.startswith("?"):
+        return True
+    return False
+
+
+def _bump_seed_for_join_extension(seed: int, sq: dict, *, values: list[dict]) -> int:
+    if not values:
+        return seed
+    if _search_query_has_bound_constant(sq):
+        return max(seed, _join_bound_min_k())
+    return seed
+
+
+def _log_bgp_fetch(
+    *,
+    search_queries: list[dict],
+    values: list[dict],
+    returned_count: int,
+    k: Optional[int],
+) -> None:
+    """Log catalog expected vs returned row count after each Comunica BGP POST."""
+    if os.getenv("VECTOR_BGP_LOG", "1") == "0":
+        return
+    sq = search_queries[0] if search_queries else {}
+    expected: Optional[int] = None
+    if AUTO_K_RESOLVER.available:
+        expected = AUTO_K_RESOLVER.catalog_match_count(
+            subject=sq.get("subject"),
+            predicate=sq.get("predicate"),
+            object_value=sq.get("object"),
+            object_type=sq.get("object_type"),
+        )
+    pred = sq.get("predicate") or "?"
+    subj = sq.get("subject") or "?"
+    obj = sq.get("object") or "?"
+    exp_s = str(expected) if expected is not None else "n/a"
+    k_s = str(k) if k is not None else "adaptive"
+    print(
+        f"[BGP] values_in={len(values)} expected={exp_s} returned={returned_count} "
+        f"k={k_s} pattern=({subj}, {pred}, {obj})",
+        flush=True,
+    )
 
 
 app = Flask(__name__)
@@ -35,7 +114,7 @@ vdb = VectorDataBase(
     embedding_model="all-MiniLM-L6-v2",  # Faster alternative to paraphrase-multilingual-MiniLM-L12-v2
     # embedding_model="paraphrase-multilingual-MiniLM-L12-v2",  # Original (slower, more accurate)
     # embedding_model="BAAI/bge-large-en-v1.5",
-    target_embedding_dim=8  # Reduced default for per-component embedding dimension
+    target_embedding_dim=384  # per-component dim; stored vectors are 3 × 384 = 1152
 )
 
 # Connect to the vector database
@@ -114,8 +193,7 @@ def create_sparql_binding_from_triple(triple_data, query_variables):
             # Special handling for ?person queries - always map to subject
             binding[var] = {"type": "uri", "value": triple_data['subject']}
 
-    # Ensure every requested variable is present in the binding.
-    # If missing, try to infer reasonable defaults to avoid clients warning about missing vars.
+    # Fill any SELECT variables missing from the triple mapping.
     for var in query_variables:
         if var in binding:
             continue
@@ -132,11 +210,9 @@ def create_sparql_binding_from_triple(triple_data, query_variables):
                     inferred = subj.split('#')[-1]
 
             if inferred:
-                # Clean up common separators and make it human readable
                 inferred = inferred.replace('_', ' ')
                 binding[var] = {"type": "literal", "value": inferred}
             else:
-                # Final fallback: empty literal
                 binding[var] = {"type": "literal", "value": ""}
             continue
 
@@ -156,7 +232,6 @@ def create_sparql_binding_from_triple(triple_data, query_variables):
             binding[var] = {"type": otype, "value": triple_data.get('object', '')}
             continue
 
-        # Generic fallback: empty literal
         binding[var] = {"type": "literal", "value": ""}
     
     return binding
@@ -212,6 +287,8 @@ def handle_pattern_query(json_data):
                 return None
             if term_type in ['iri', 'uri']:
                 return value if value.startswith('<') and value.endswith('>') else f"<{value}>"
+            if term_type == 'literal':
+                return _normalize_literal(value)
             return value
 
         def extract_term_value(term_json):
@@ -316,9 +393,10 @@ def handle_pattern_query(json_data):
                 "subject_value": subject_value,
                 "predicate_value": predicate_value,
                 "object_value": object_value,
+                "object_type": object_type,
                 "subj_is_var": subj_is_var,
                 "pred_is_var": pred_is_var,
-                "obj_is_var": obj_is_var
+                "obj_is_var": obj_is_var,
             }
             
             return search_query, validation_info
@@ -330,6 +408,13 @@ def handle_pattern_query(json_data):
             search_query, validation_info = build_search_query_for_row(value_row)
             search_queries.append(search_query)
             validation_info_list.append(validation_info)
+
+        explicit_k: Optional[int] = None
+        if requested_limit is not None:
+            try:
+                explicit_k = int(requested_limit)
+            except (ValueError, TypeError):
+                explicit_k = None
 
         # Batch vector search
         all_results_rows = []
@@ -353,13 +438,6 @@ def handle_pattern_query(json_data):
                         parse_rdf_triple=parse_rdf_triple,
                         log=False,
                     )
-
-                explicit_k = None
-                if requested_limit is not None:
-                    try:
-                        explicit_k = int(requested_limit)
-                    except (ValueError, TypeError):
-                        explicit_k = None
 
                 if explicit_k is not None:
                     effective_search_limit = milvus_safe_k(explicit_k)
@@ -404,15 +482,20 @@ def handle_pattern_query(json_data):
                                 seed = 25
                             else:
                                 seed = 50
+                        seed = _bump_seed_for_join_extension(seed, sq, values=values)
                         seed_ks.append(seed)
                         stability_count_floors.append(floor)
 
+                    adaptive_mults = _adaptive_multipliers_from_request(json_data)
+                    adaptive_jaccard = _adaptive_jaccard_from_request(json_data)
                     final_rows = adaptive_batch_search(
                         vdb=vdb,
                         collection_name=VECTOR_COLLECTION_NAME,
                         search_queries=search_queries,
                         seed_ks=seed_ks,
                         filter_fn=filter_fn,
+                        multipliers=adaptive_mults,
+                        jaccard_threshold=adaptive_jaccard,
                         log=False,
                         stability_count_floors=stability_count_floors,
                     )
@@ -423,6 +506,12 @@ def handle_pattern_query(json_data):
                 print(f"Error during batch vector search: {e}")
                 import traceback
                 traceback.print_exc()
+        _log_bgp_fetch(
+            search_queries=search_queries,
+            values=values,
+            returned_count=len(all_results_rows),
+            k=explicit_k,
+        )
         response = {
             "vars": variables,
             "rows": all_results_rows

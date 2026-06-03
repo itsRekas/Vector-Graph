@@ -61,6 +61,11 @@ catalog.pkl
 # Matplotlib / plotting cache (auto-generated when running benchmark plots)
 .tmp_mpl/
 .matplotlib/
+.mplcache/
+**/.mplcache/
+
+# Ad-hoc LUBM / join debug scripts (local investigation only)
+benchmarks/**/debug_*.py
 
 # Generated benchmark & experiment outputs (JSON, CSV, PNG, logs)
 results/**

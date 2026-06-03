@@ -108,7 +108,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="localhost", help="Milvus host")
     parser.add_argument("--port", type=int, default=19530, help="Milvus port")
     parser.add_argument("--embedding-model", default="all-MiniLM-L6-v2", help="SentenceTransformer model name")
-    parser.add_argument("--target-embedding-dim", type=int, default=8, help="Per-component embedding dimension")
+    parser.add_argument("--target-embedding-dim", type=int, default=384, help="Per-component embedding dimension")
     parser.add_argument(
         "--dim-adjustment",
         default="truncate",
