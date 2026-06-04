@@ -323,13 +323,13 @@ def queries_to_json_payload(queries: Sequence[LubmQuery]) -> dict:
     }
 
 
-def auto_k_for_query(q: LubmQuery, *, margin: float, min_k: int, max_k: int) -> int:
-    if q.expected_count is None or q.expected_count <= 0:
-        return min_k
-    import math
+# def auto_k_for_query(q: LubmQuery, *, margin: float, min_k: int, max_k: int) -> int:
+#     if q.expected_count is None or q.expected_count <= 0:
+#         return min_k
+#     import math
 
-    k = max(min_k, int(math.ceil(q.expected_count * margin)))
-    return min(k, max_k)
+#     k = max(min_k, int(math.ceil(q.expected_count * margin)))
+#     return min(k, max_k)
 
 
 def _extract_where_body(query: str) -> str:
