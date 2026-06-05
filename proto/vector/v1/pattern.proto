@@ -1,0 +1,68 @@
+syntax = "proto3";
+
+package vector.v1;
+
+option java_multiple_files = true;
+
+// Comunica vector BGP request (mirrors POST /vector JSON body).
+message Term {
+  string type = 1;      // iri | uri | literal | bnode
+  string value = 2;
+  string lang = 3;
+  string datatype = 4;
+}
+
+message Pattern {
+  Term subject = 1;
+  Term predicate = 2;
+  Term object = 3;
+}
+
+message ValueRow {
+  map<string, Term> bindings = 1;
+}
+
+message PatternQueryRequest {
+  Pattern pattern = 1;
+  repeated string vars = 2;
+  repeated ValueRow values = 3;
+  optional int32 k = 4;
+  repeated int32 adaptive_multipliers = 5;
+  optional double adaptive_jaccard = 6;
+}
+
+message BindingRow {
+  map<string, Term> bindings = 1;
+}
+
+message PatternQueryMetadata {
+  repeated string vars = 1;
+}
+
+message PatternQueryDone {
+  int32 total_rows = 1;
+  optional int32 returned_count = 2;
+  string k_mode = 3;  // "fixed" | "adaptive"
+}
+
+message PatternQueryError {
+  string message = 1;
+}
+
+message PatternQueryEvent {
+  oneof event {
+    PatternQueryMetadata metadata = 1;
+    BindingRow row = 2;
+    PatternQueryDone done = 3;
+    PatternQueryError error = 4;
+    BindingRowBatch row_batch = 5;
+  }
+}
+
+message BindingRowBatch {
+  repeated BindingRow rows = 1;
+}
+
+service VectorPatternService {
+  rpc QueryPattern(PatternQueryRequest) returns (stream PatternQueryEvent);
+}

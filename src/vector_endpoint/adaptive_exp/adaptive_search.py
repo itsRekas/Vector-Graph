@@ -51,6 +51,7 @@ def adaptive_batch_search(
     milvus_max_topk: int = 200000,
     log: bool = False,
     stability_count_floors: Optional[list[Optional[int]]] = None,
+    on_query_finalized: Callable[[int, list[dict]], None] | None = None,
 ) -> list[list[dict]]:
     """Run per-query k-escalation with stability-based early stopping.
 
@@ -72,6 +73,8 @@ def adaptive_batch_search(
             post-filtered id set size. Escalation continues while below the
             floor even if Jaccard is stable. Per-query ``None`` skips the floor.
             Omit the argument entirely to disable floors for all queries.
+        on_query_finalized: when set, called with ``(query_index, rows)`` each time
+            a query stops escalating (stable or ladder exhausted).
 
     Returns:
         `final_rows[i]` is the list of result rows for query `i` at the round
@@ -100,6 +103,10 @@ def adaptive_batch_search(
 
     out_fields = list(output_fields)
 
+    def _finalize_query(i: int) -> None:
+        if on_query_finalized is not None:
+            on_query_finalized(i, final_rows[i])
+
     for round_idx in range(max_rounds):
         if not active:
             break
@@ -108,6 +115,7 @@ def adaptive_batch_search(
         for i in list(active):
             if round_idx >= len(ladders[i]):
                 active.discard(i)
+                _finalize_query(i)
                 continue
             groups[ladders[i][round_idx]].append(i)
 
@@ -116,13 +124,20 @@ def adaptive_batch_search(
 
         for k, indices in groups.items():
             batch = [search_queries[i] for i in indices]
+            if log:
+                from vector_endpoint.bgp_log import bgp_emit
+
+                bgp_emit(
+                    f"[BGP] adaptive round {round_idx + 1}/{max_rounds} "
+                    f"k={k} queries={len(indices)} active={len(active)}"
+                )
             try:
                 results = vdb.search(
                     collection_name=collection_name,
                     query_texts=batch,
                     limit=k,
                     output_fields=out_fields,
-                    log=log,
+                    log=False,
                 )
             except Exception:  # noqa: BLE001
                 raise
@@ -148,6 +163,10 @@ def adaptive_batch_search(
                 prev_ids[i] = ids
                 if stopped:
                     active.discard(i)
+                    _finalize_query(i)
+
+    for i in list(active):
+        _finalize_query(i)
 
     return final_rows
 

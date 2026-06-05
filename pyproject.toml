@@ -9,6 +9,8 @@ description = "Milvus-backed S|P|O embedding vector endpoint for Comunica SPARQL
 requires-python = ">=3.11"
 dependencies = [
     "flask",
+    "grpcio",
+    "grpcio-tools",
     "pymilvus",
     "sentence-transformers",
     "numpy",

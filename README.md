@@ -12,7 +12,10 @@ vector-endpoint/
 ├── pyproject.toml              # package definition + dependencies
 ├── src/
 │   └── vector_endpoint/        # the engine (installable package)
-│       ├── app.py              # Flask endpoint (POST /vector on :2222)
+│       ├── app.py              # Flask HTTP baseline (POST /vector on :2222)
+│       ├── grpc_app.py         # gRPC streaming server (:50051)
+│       ├── pattern_query.py    # shared BGP logic (stream + collect)
+│       ├── proto/              # (repo root) pattern.proto
 │       ├── catalog.py          # cardinality catalog for auto-k
 │       ├── auto_k.py           # catalog-driven k resolution
 │       ├── load.py             # NT -> Milvus load pipeline
@@ -53,10 +56,24 @@ docker compose up -d
 After changing `configs/milvus.yaml`, recreate the Milvus container so the mount
 is picked up (`docker compose up -d --force-recreate standalone`).
 
-2. Start the endpoint (listens on `http://localhost:2222`):
+2. Start an endpoint (two independent processes):
+
+**HTTP baseline** (buffered JSON, `http://localhost:2222/vector`):
 
 ```bash
 .venv/bin/python -m vector_endpoint.app
+```
+
+**gRPC streaming** (`grpc://127.0.0.1:50051`):
+
+```bash
+.venv/bin/python -m vector_endpoint.grpc_app
+```
+
+Regenerate Python stubs after editing `proto/vector/v1/pattern.proto`:
+
+```bash
+bash scripts/generate_grpc.sh
 ```
 
 Optional environment overrides:
@@ -67,6 +84,8 @@ Optional environment overrides:
   subject or object (default `512`).
 - `VECTOR_ADAPTIVE_MULTIPLIERS` — comma-separated k ladder (default `1,10,100,1000`).
 - `VECTOR_ADAPTIVE_JACCARD` — Jaccard stability threshold (default `0.99`).
+- `VECTOR_GRPC_PORT` — gRPC listen port (default `50051`).
+- `VECTOR_GRPC_ROW_BATCH` — rows per `row_batch` stream event (default `100`).
 
 ## Milvus configuration
 
@@ -99,8 +118,19 @@ Queries reach this endpoint through a forked Comunica engine:
   Comunica 5.2.2 fork with the Colab research changes.
 
 It adds a vector query source (`actor-query-source-identify-hypermedia-vector`)
-exposed via the **`comunica-vector`** CLI, which sends `POST` requests to
-`http://localhost:2222/vector` and forwards the `-k` search limit to Milvus. The
+exposed via the **`comunica-vector`** CLI. Select the pipeline with **`--http`**
+(baseline JSON) or **`--grpc`** (streaming):
+
+```bash
+# HTTP baseline
+comunica-vector --http http://localhost:2222/vector -k 1200 -q 'SELECT ...'
+
+# gRPC streaming (start vector_endpoint.grpc_app first)
+comunica-vector --grpc 127.0.0.1:50051 -k 1200 -q 'SELECT ...'
+```
+
+Legacy invocations without flags still default to HTTP when the source URL is
+`http://...`. The CLI forwards `-k` and adaptive options to Milvus. The
 fork also provides **`comunica-sparql-file`**, used as the SPARQL ground-truth
 baseline in `benchmarks/pr/`.
 
@@ -112,14 +142,6 @@ git clone https://github.com/itsRekas/comunica.git
 cd comunica
 yarn install && yarn build && yarn run build:engines
 cd engines/query-sparql && yarn link   # puts comunica-vector / comunica-sparql-file on PATH
-```
-
-With the endpoint running and Milvus collection `version_5` loaded, a vector
-query looks like:
-
-```bash
-comunica-vector http://localhost:2222/vector -k 1200 -q \
-  'SELECT ?X WHERE { ?X <http://www.w3.org/1999/02/22-rdf-syntax-ns#type> <http://swat.cse.lehigh.edu/onto/univ-bench.owl#University> }'
 ```
 
 See the fork's `SWITCH.md` for full build/link details and the Milvus cutover steps.
