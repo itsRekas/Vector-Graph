@@ -62,6 +62,7 @@ catalog.pkl
 .tmp_mpl/
 .matplotlib/
 .mplcache/
+.mplconfig/
 **/.mplcache/
 
 # Ad-hoc LUBM / join debug scripts (local investigation only)

@@ -7,7 +7,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from vector_endpoint.adaptive_exp import adaptive_batch_search, filter_matches_to_rows
+from vector_endpoint.adaptive_exp import filter_matches_to_rows, iter_adaptive_batch_search
 from vector_endpoint.auto_k import CatalogKResolver, milvus_safe_k, _normalize_literal
 from vector_endpoint.bgp_log import (
     bgp_emit,
@@ -401,7 +401,6 @@ def stream_pattern_rows(
                 seed_ks.append(seed)
                 stability_count_floors.append(floor)
 
-            adaptive_buffer: list[dict] = []
             bgp_log = bgp_log_enabled()
             if bgp_log:
                 mult_s = ",".join(str(m) for m in query_input.adaptive_multipliers)
@@ -411,10 +410,10 @@ def stream_pattern_rows(
                     f"multipliers={mult_s} jaccard={query_input.adaptive_jaccard}"
                 )
 
-            def on_finalized(_idx: int, rows: list[dict]) -> None:
-                adaptive_buffer.extend(rows)
-
-            adaptive_batch_search(
+            # Emit each value-row's rows as it finalizes (finalization order, not
+            # value-row order) so the client overlaps processing with the server's
+            # remaining adaptive rounds instead of waiting for the slowest query.
+            for _idx, rows in iter_adaptive_batch_search(
                 vdb=database,
                 collection_name=collection_name,
                 search_queries=search_queries,
@@ -424,9 +423,8 @@ def stream_pattern_rows(
                 jaccard_threshold=query_input.adaptive_jaccard,
                 log=bgp_log,
                 stability_count_floors=stability_count_floors,
-                on_query_finalized=on_finalized,
-            )
-            yield from emit_rows(adaptive_buffer)
+            ):
+                yield from emit_rows(rows)
 
     except Exception as e:  # noqa: BLE001
         print(f"Error during batch vector search: {e}")

@@ -10,12 +10,52 @@ from pymilvus import (
 )
 from pymilvus.orm.mutation import MutationResult
 from sentence_transformers import SentenceTransformer
+from collections import OrderedDict
 from typing import List, Union, Optional, Sequence, Tuple
 import numpy as np
+import os
 import re
 import torch
-from functools import lru_cache
 import hashlib
+
+
+class _LruEmbeddingCache:
+    """LRU cache for per-component text embeddings (most-recently-used eviction)."""
+
+    def __init__(self, max_size: int) -> None:
+        if max_size <= 0:
+            raise ValueError(f"embedding cache max_size must be > 0, got {max_size}")
+        self._max_size = max_size
+        self._store: OrderedDict[str, np.ndarray] = OrderedDict()
+
+    def __len__(self) -> int:
+        return len(self._store)
+
+    def clear(self) -> int:
+        count = len(self._store)
+        self._store.clear()
+        return count
+
+    @staticmethod
+    def make_key(text: str, *, normalize: bool) -> str:
+        prefix = "norm_" if normalize else "raw_"
+        return prefix + hashlib.md5(text.encode("utf-8")).hexdigest()
+
+    def get(self, key: str) -> Optional[np.ndarray]:
+        if key not in self._store:
+            return None
+        self._store.move_to_end(key)
+        return self._store[key]
+
+    def put(self, key: str, value: np.ndarray) -> None:
+        if key in self._store:
+            self._store.move_to_end(key)
+            self._store[key] = value.copy()
+            return
+        while len(self._store) >= self._max_size:
+            self._store.popitem(last=False)
+        self._store[key] = value.copy()
+
 
 class VectorDataBase:
     
@@ -27,6 +67,7 @@ class VectorDataBase:
         embedding_model : str,
         target_embedding_dim: int,
         dim_adjustment: str = "truncate",
+        embedding_cache_size: Optional[int] = None,
     ):
         self._database_name : str = database_name
         self._host : str = host
@@ -47,9 +88,11 @@ class VectorDataBase:
         # Concatenated embedding: subject + predicate + object = 3 * embedding_dim
         self.embedding_dimension = target_embedding_dim * 3
         
-        # Embedding cache for common patterns
-        self._embedding_cache = {}
-        self._cache_max_size = 1000  # Cache up to 1000 embeddings
+        # LRU cache for frequently reused query components (predicates, types, literals).
+        cache_size = embedding_cache_size
+        if cache_size is None:
+            cache_size = int(os.getenv("VECTOR_EMBEDDING_CACHE_SIZE", "4096"))
+        self._embedding_cache = _LruEmbeddingCache(cache_size)
 
     def _validate_dim_configuration(self) -> None:
         if self._embedding_dim <= 0:
@@ -70,8 +113,7 @@ class VectorDataBase:
     
     def clear_cache(self):
         """Clear the embedding cache. Useful for debugging or ensuring fresh embeddings."""
-        cache_size = len(self._embedding_cache)
-        self._embedding_cache.clear()
+        cache_size = self._embedding_cache.clear()
         print(f"Cleared embedding cache ({cache_size} entries)")
         return cache_size
     
@@ -327,16 +369,15 @@ class VectorDataBase:
         if not texts:
             return np.zeros((0, self._embedding_dim), dtype=float)
         
-        # Check cache for each text
-        cache_key_prefix = "norm_" if normalize else "raw_"
         texts_to_encode = []
         text_indices = []
         cached_embeddings = []
-        
+
         for i, text in enumerate(texts):
-            cache_key = cache_key_prefix + hashlib.md5(text.encode('utf-8')).hexdigest()
-            if cache_key in self._embedding_cache:
-                cached_embeddings.append((i, self._embedding_cache[cache_key]))
+            cache_key = _LruEmbeddingCache.make_key(text, normalize=normalize)
+            cached = self._embedding_cache.get(cache_key)
+            if cached is not None:
+                cached_embeddings.append((i, cached))
             else:
                 texts_to_encode.append(text)
                 text_indices.append(i)
@@ -366,17 +407,9 @@ class VectorDataBase:
                 norms = np.where(norms == 0, 1, norms)  # Avoid division by zero
                 new_embeddings = new_embeddings / norms
             
-            # Store in cache (with size limit)
             for idx, text in enumerate(texts_to_encode):
-                cache_key = cache_key_prefix + hashlib.md5(text.encode('utf-8')).hexdigest()
-                if len(self._embedding_cache) < self._cache_max_size:
-                    self._embedding_cache[cache_key] = new_embeddings[idx].copy()
-                else:
-                    # Simple eviction: remove oldest (first) entry
-                    if self._embedding_cache:
-                        first_key = next(iter(self._embedding_cache))
-                        del self._embedding_cache[first_key]
-                    self._embedding_cache[cache_key] = new_embeddings[idx].copy()
+                cache_key = _LruEmbeddingCache.make_key(text, normalize=normalize)
+                self._embedding_cache.put(cache_key, new_embeddings[idx])
         
         # Combine cached and new embeddings in correct order
         if not cached_embeddings and not texts_to_encode:
