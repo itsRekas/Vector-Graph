@@ -29,6 +29,20 @@ message PatternQueryRequest {
   optional int32 k = 4;
   repeated int32 adaptive_multipliers = 5;
   optional double adaptive_jaccard = 6;
+  // When true, stream pre-filter Milvus hits from the same search used for results.
+  optional bool include_raw_hits = 7;
+}
+
+message MilvusHit {
+  optional int64 id = 1;
+  optional double distance = 2;
+  string text = 3;
+}
+
+message RawSearchResult {
+  int32 value_row_index = 1;
+  int32 k_used = 2;
+  repeated MilvusHit hits = 3;
 }
 
 message BindingRow {
@@ -42,7 +56,7 @@ message PatternQueryMetadata {
 message PatternQueryDone {
   int32 total_rows = 1;
   optional int32 returned_count = 2;
-  string k_mode = 3;  // "fixed" | "adaptive"
+  string k_mode = 3;  // "fixed" | "adaptive" | "pagination"
 }
 
 message PatternQueryError {
@@ -56,6 +70,7 @@ message PatternQueryEvent {
     PatternQueryDone done = 3;
     PatternQueryError error = 4;
     BindingRowBatch row_batch = 5;
+    RawSearchResult raw_search = 6;
   }
 }
 
@@ -63,6 +78,46 @@ message BindingRowBatch {
   repeated BindingRow rows = 1;
 }
 
+// Client-driven pagination (one page per unary RPC call).
+message PatternPageRequest {
+  optional string k_mode = 1;  // "pagination" required to start
+  optional int32 k = 2;        // batch_size per page when starting
+  optional int32 limit = 3;      // total Milvus hit cap (default 2 * catalog_k)
+  optional string cursor = 4;    // deprecated alias; use session
+  optional bool cancel = 5;
+  Pattern pattern = 6;
+  repeated string vars = 7;
+  repeated ValueRow values = 8;
+  optional bool include_raw_hits = 9;
+  optional bool next = 10;
+  optional int32 page = 11;      // 1-based cached lookup
+  optional string session = 12;  // session id from prior page
+}
+
+message PaginationInfo {
+  optional string cursor = 1;    // deprecated; use session
+  bool done = 2;
+  int32 k = 3;
+  int32 limit = 4;
+  optional int32 catalog_k = 5;
+  int32 page_index = 6;
+  int32 milvus_hits_this_page = 7;
+  int32 milvus_hits_total = 8;
+  int32 value_row_index = 9;
+  string k_mode = 10;
+  optional bool from_cache = 11;
+  optional string session = 12;
+}
+
+message PatternPageResponse {
+  repeated string vars = 1;
+  repeated BindingRow rows = 2;
+  optional PaginationInfo pagination = 3;
+  optional RawSearchResult raw_search = 4;
+  optional PatternQueryError error = 5;
+}
+
 service VectorPatternService {
   rpc QueryPattern(PatternQueryRequest) returns (stream PatternQueryEvent);
+  rpc QueryPatternPage(PatternPageRequest) returns (PatternPageResponse);
 }

@@ -69,20 +69,20 @@ def create_sparql_binding_from_triple(triple_data, query_variables):
             else:
                 binding[var] = {"type": "uri", "value": value}
         elif var == 'person' and triple_data['subject']:
-            # Special handling for ?person queries - always map to subject
+            # Map ?person to subject URI
             binding[var] = {"type": "uri", "value": triple_data['subject']}
 
-    # Fill any SELECT variables missing from the triple mapping.
+    # Fill SELECT variables not covered by the triple mapping.
     for var in query_variables:
         if var in binding:
             continue
 
-        # Infer ?name from the subject URI by taking the last path segment
+        # Infer ?name / ?label from the last URI path segment
         if var.lower() in ['name', 'label']:
             subj = triple_data.get('subject', '')
             inferred = None
             if subj:
-                # take last segment after slash or hash
+                # Last path segment after / or #
                 if '/' in subj:
                     inferred = subj.rstrip('/').split('/')[-1]
                 elif '#' in subj:
@@ -95,17 +95,17 @@ def create_sparql_binding_from_triple(triple_data, query_variables):
                 binding[var] = {"type": "literal", "value": ""}
             continue
 
-        # For subject-like variables ensure subject URI is present
+        # Subject-role variables
         if var in ['s', 'subject']:
             binding[var] = {"type": "uri", "value": triple_data.get('subject', '')}
             continue
 
-        # For predicate-like variables
+        # Predicate-role variables
         if var in ['p', 'predicate']:
             binding[var] = {"type": "uri", "value": triple_data.get('predicate', '')}
             continue
 
-        # For object-like variables
+        # Object-role variables
         if var in ['o', 'object']:
             otype = 'literal' if triple_data.get('object_type') == 'literal' else 'uri'
             binding[var] = {"type": otype, "value": triple_data.get('object', '')}
@@ -116,8 +116,89 @@ def create_sparql_binding_from_triple(triple_data, query_variables):
     return binding
 
 
+def handle_pattern_pagination(json_data):
+    """Session-based pagination request handler."""
+    from vector_endpoint.pagination_search import resolve_pagination_page, start_pagination_page
+    from vector_endpoint.pagination_sessions import (
+        PaginationPageNotCached,
+        PaginationSessionGone,
+        PaginationSessionNotFound,
+        resolve_session_id,
+    )
+
+    session_id = resolve_session_id(json_data)
+    has_page = json_data.get("page") is not None
+    has_next = bool(json_data.get("next"))
+    if has_page and has_next:
+        return (
+            jsonify({"error": "page and next are mutually exclusive"}),
+            400,
+            {"Content-Type": "application/json"},
+        )
+    if (has_page or has_next) and not session_id:
+        return (
+            jsonify({"error": "session is required when using page or next"}),
+            400,
+            {"Content-Type": "application/json"},
+        )
+    if "page_index" in json_data or "offset" in json_data:
+        return (
+            jsonify({"error": "page_index and offset are not supported; use session and page"}),
+            400,
+            {"Content-Type": "application/json"},
+        )
+
+    try:
+        if session_id:
+            page_num: int | None = None
+            if has_page:
+                try:
+                    page_num = int(json_data["page"])
+                except (ValueError, TypeError) as exc:
+                    return (
+                        jsonify({"error": f"invalid page: {exc}"}),
+                        400,
+                        {"Content-Type": "application/json"},
+                    )
+            page = resolve_pagination_page(
+                session_id,
+                page=page_num,
+                cancel=bool(json_data.get("cancel")),
+            )
+        else:
+            query_input = PatternQueryInput.from_json(json_data)
+            if query_input.k_mode != "pagination":
+                return (
+                    jsonify({"error": "k_mode must be 'pagination' to start pagination"}),
+                    400,
+                    {"Content-Type": "application/json"},
+                )
+            log_http_pattern_received(query_input)
+            page = start_pagination_page(query_input)
+        body: dict = {
+            "vars": page.vars,
+            "rows": page.rows,
+            "pagination": page.pagination.to_dict(),
+        }
+        return jsonify(body), 200, {"Content-Type": "application/json"}
+    except PaginationPageNotCached as exc:
+        return jsonify({"error": str(exc)}), 404, {"Content-Type": "application/json"}
+    except PaginationSessionNotFound as exc:
+        return jsonify({"error": str(exc)}), 404, {"Content-Type": "application/json"}
+    except PaginationSessionGone as exc:
+        return jsonify({"error": str(exc)}), 410, {"Content-Type": "application/json"}
+    except ValueError as exc:
+        return jsonify({"error": str(exc), "vars": [], "rows": []}), 400, {"Content-Type": "application/json"}
+    except Exception as e:
+        print(f"ERROR in handle_pattern_pagination: {e}")
+        import traceback
+
+        traceback.print_exc()
+        return jsonify({"error": str(e), "vars": [], "rows": []}), 500
+
+
 def handle_pattern_query(json_data):
-    """Handle JSON pattern query from Comunica vector source (buffered HTTP baseline)."""
+    """Handle buffered JSON pattern query (single response)."""
     try:
         query_input = PatternQueryInput.from_json(json_data)
         log_http_pattern_received(query_input)
@@ -206,6 +287,10 @@ def vector():
     
     try:
         json_data = request.get_json()
+        from vector_endpoint.pagination_sessions import resolve_session_id
+
+        if resolve_session_id(json_data) or json_data.get("k_mode") == "pagination":
+            return handle_pattern_pagination(json_data)
         if 'pattern' not in json_data:
             return jsonify({"error": "Missing 'pattern' field in request"}), 400
         return handle_pattern_query(json_data)
@@ -325,7 +410,7 @@ def sparql():
                     if vector_results and len(vector_results) > 0:
                         # Extract matches from the first query result
                         matches = vector_results[0].get("matches", [])
-                        search_results = matches[:3]  # Ensure we only get top 3
+                        search_results = matches[:3]  # top 3
                         print(f" Found {len(search_results)} similar results")
                     else:
                         print("No similar results found in vector database")
@@ -346,7 +431,7 @@ def sparql():
                 
                 if search_results:
                     print(f" Processing {len(search_results)} search results")
-                    # Always try to extract variables, even if we think we have them
+                    # Extract variables from each triple
                     if not query_variables:
                         print(f"🔧 Re-extracting variables as backup")
                         query_variables = extract_sparql_variables(query)

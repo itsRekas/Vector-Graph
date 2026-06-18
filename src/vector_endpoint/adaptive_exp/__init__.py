@@ -1,8 +1,4 @@
-"""Adaptive k-escalation search experiments.
-
-Provides per-query k-escalation with a post-filter stability criterion on top
-of the existing VectorDataBase batch search.
-"""
+"""Adaptive k-escalation with post-filter stability over VectorDataBase search."""
 
 from .stability import build_k_ladder, jaccard, is_stable
 from .filter import filter_matches_to_rows

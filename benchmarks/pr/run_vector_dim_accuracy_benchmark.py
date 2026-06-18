@@ -7,15 +7,24 @@ import json
 import re
 import subprocess
 import sys
+from time import perf_counter
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
-from vector_endpoint.auto_k import CatalogKResolver, milvus_safe_k
+from vector_endpoint.auto_k import CatalogKResolver, milvus_safe_k, resolve_pagination_limit
+from vector_endpoint.pattern_query import PatternQueryInput
+from vector_endpoint.pagination_search import collect_pagination_pages
 from vector_endpoint.catalog import parse_nt_triple_line
 from vector_endpoint.db.VectorDataBase import VectorDataBase
 from vector_endpoint.adaptive_exp import adaptive_batch_search, build_k_ladder
+
+from grpc_pattern_client import (
+    pattern_request_body_from_query,
+    query_pattern_grpc,
+    query_pattern_pagination_grpc,
+)
 
 
 DEFAULT_DIMS = "8"
@@ -92,6 +101,23 @@ def parse_args() -> argparse.Namespace:
         default=str(Path(__file__).resolve().parents[2] / "catalog.pkl"),
         help="Catalog pickle path used for auto-k when --k is omitted.",
     )
+    parser.add_argument(
+        "--catalog-k-scale",
+        type=float,
+        default=1.2,
+        help="seed_k = ceil(catalog_count * scale) per pattern (default 1.2).",
+    )
+    parser.add_argument(
+        "--catalog-min-k",
+        type=int,
+        default=10,
+        help="Minimum catalog seed k per pattern.",
+    )
+    parser.add_argument(
+        "--grpc-endpoint",
+        default=None,
+        help="gRPC target for vector search (e.g. 127.0.0.1:50051 or grpc://127.0.0.1:50051).",
+    )
     parser.add_argument("--database-name", default="lubm_db", help="Database label")
     parser.add_argument("--host", default="localhost", help="Milvus host")
     parser.add_argument("--port", type=int, default=19530, help="Milvus port")
@@ -101,6 +127,12 @@ def parse_args() -> argparse.Namespace:
         default="truncate",
         choices=["truncate"],
         help="How to adapt model output to target dim (currently only truncate).",
+    )
+    parser.add_argument(
+        "--component-fusion",
+        default="concat",
+        choices=["concat", "hadamard"],
+        help="Fuse S|P|O embeddings: concat (3d stored) or hadamard (d stored)",
     )
     parser.add_argument("--rdf-file", default="data/nts/RLUBM_cleaned.nt", help="Path to RDF NT file for baseline")
     parser.add_argument(
@@ -132,6 +164,30 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.99,
         help="Jaccard near-stability threshold for adaptive escalation (default 0.99).",
+    )
+    parser.add_argument(
+        "--use-pagination",
+        action="store_true",
+        help=(
+            "Use Milvus search_iterator pagination (client-driven pages via gRPC QueryPatternPage). "
+            "Requires --k as page batch size; total cap defaults to 2 * catalog_k per query."
+        ),
+    )
+    parser.add_argument(
+        "--pagination-limit",
+        type=int,
+        default=None,
+        help="Optional total Milvus hit cap for pagination (default 2 * catalog_k per query).",
+    )
+    parser.add_argument(
+        "--latency-warmup-queries",
+        type=int,
+        default=1,
+        help=(
+            "Untimed vector fetches per dimension before benchmarking (default 1). "
+            "Excludes gRPC/model cold-start from avg_vector_query_seconds without "
+            "dropping any timed queries from P/R."
+        ),
     )
     return parser.parse_args()
 
@@ -343,32 +399,56 @@ def triple_to_binding(triple: CandidateTriple, select_vars: Sequence[str]) -> Di
     return binding
 
 
+def _hit_to_triple(hit: Dict) -> Optional[CandidateTriple]:
+    text = hit.get("text")
+    parsed = parse_nt_triple_line(text)
+    if not parsed:
+        return None
+    obj_is_uri = parsed.object_value.startswith("<") and parsed.object_value.endswith(">")
+    return CandidateTriple(
+        subject=parsed.subject,
+        predicate=parsed.predicate,
+        object_value=parsed.object_value,
+        object_type="uri" if obj_is_uri else "literal",
+    )
+
+
 def _matches_to_bindings(
     matches: List[Dict],
     pattern: QueryPattern,
+    *,
+    apply_pattern_filter: bool = True,
 ) -> Tuple[List[Dict[str, Dict[str, str]]], Set[int]]:
-    """Apply pattern post-filter and return (bindings, set of milvus match ids)."""
+    """Map Milvus hits to bindings; optionally apply pattern post-filter."""
     bindings: List[Dict[str, Dict[str, str]]] = []
     ids: Set[int] = set()
     for hit in matches:
-        text = hit.get("text")
-        parsed = parse_nt_triple_line(text)
-        if not parsed:
+        triple = _hit_to_triple(hit)
+        if triple is None:
             continue
-        obj_is_uri = parsed.object_value.startswith("<") and parsed.object_value.endswith(">")
-        triple = CandidateTriple(
-            subject=parsed.subject,
-            predicate=parsed.predicate,
-            object_value=parsed.object_value,
-            object_type="uri" if obj_is_uri else "literal",
-        )
-        if not string_part_match(pattern, triple):
+        if apply_pattern_filter and not string_part_match(pattern, triple):
             continue
         mid = hit.get("id")
         if mid is not None:
             ids.add(mid)
         bindings.append(triple_to_binding(triple, pattern.select_vars))
     return bindings, ids
+
+
+def raw_bindings_from_matches(
+    matches: List[Dict],
+    pattern: QueryPattern,
+) -> Tuple[List[Dict[str, Dict[str, str]]], int, int]:
+    """Parse all Milvus hits to bindings (no pattern filter).
+
+    Returns (bindings, raw_hit_count, raw_parseable_count).
+    """
+    bindings, _ids = _matches_to_bindings(matches, pattern, apply_pattern_filter=False)
+    parseable_count = 0
+    for hit in matches:
+        if _hit_to_triple(hit) is not None:
+            parseable_count += 1
+    return bindings, len(matches), parseable_count
 
 
 def run_vector_bindings(
@@ -379,7 +459,7 @@ def run_vector_bindings(
     pattern: QueryPattern,
     k: int,
     log: bool,
-) -> List[Dict[str, Dict[str, str]]]:
+) -> Tuple[List[Dict[str, Dict[str, str]]], List[Dict]]:
     results = vdb.search(
         collection_name=collection,
         query_texts=query,
@@ -388,9 +468,199 @@ def run_vector_bindings(
         log=log,
     )
     if not results:
-        return []
-    bindings, _ids = _matches_to_bindings(results[0].get("matches", []), pattern)
-    return bindings
+        return [], []
+    matches = list(results[0].get("matches", []))
+    bindings, _ids = _matches_to_bindings(matches, pattern)
+    return bindings, matches
+
+
+def run_vector_bindings_pagination_grpc(
+    *,
+    grpc_endpoint: str,
+    query: str,
+    page_k: int,
+    pagination_limit: Optional[int],
+) -> Tuple[List[Dict[str, Dict[str, str]]], List[Dict], Dict[str, int]]:
+    body = pattern_request_body_from_query(
+        query,
+        k=page_k,
+        pagination_limit=pagination_limit,
+        use_pagination=True,
+        include_raw_hits=True,
+    )
+    result = query_pattern_pagination_grpc(grpc_endpoint, body)
+    telemetry = {
+        "pages_fetched": result.pages_fetched,
+        "milvus_hits_total": result.milvus_hits_total,
+        "resolved_limit": result.resolved_limit,
+        "catalog_k": result.catalog_k,
+        "page_k": result.page_k or page_k,
+    }
+    return result.bindings, result.raw_matches, telemetry
+
+
+def run_vector_bindings_pagination(
+    *,
+    vdb: VectorDataBase,
+    collection: str,
+    query: str,
+    page_k: int,
+    pagination_limit: Optional[int],
+    k_resolver: Optional[CatalogKResolver],
+) -> Tuple[List[Dict[str, Dict[str, str]]], List[Dict], Dict[str, int]]:
+    body = pattern_request_body_from_query(
+        query,
+        k=page_k,
+        pagination_limit=pagination_limit,
+        use_pagination=True,
+        include_raw_hits=True,
+    )
+    query_input = PatternQueryInput.from_json(body)
+    bindings, last_page, raw_matches = collect_pagination_pages(
+        query_input,
+        collection_name=collection,
+        database=vdb,
+        resolver=k_resolver or CatalogKResolver(catalog_path=None),
+    )
+    pag = last_page.pagination
+    telemetry = {
+        "pages_fetched": pag.page_index,
+        "milvus_hits_total": pag.milvus_hits_total,
+        "resolved_limit": pag.limit,
+        "catalog_k": pag.catalog_k,
+        "page_k": pag.k,
+    }
+    return bindings, raw_matches, telemetry
+
+
+def run_vector_fetch_only(
+    *,
+    vdb: Optional[VectorDataBase],
+    collection: str,
+    query: str,
+    pattern: QueryPattern,
+    use_grpc: bool,
+    grpc_endpoint: str,
+    use_pagination: bool,
+    use_adaptive: bool,
+    page_k: int,
+    effective_k: int,
+    seed_or_fixed_k: int,
+    multipliers: Sequence[int],
+    adaptive_jaccard: float,
+    pagination_limit: Optional[int],
+    k_resolver: Optional[CatalogKResolver],
+    catalog_stability_floor: Optional[int],
+    log: bool,
+) -> None:
+    """Run one vector search path without timing (latency warmup)."""
+    if use_pagination:
+        if use_grpc:
+            run_vector_bindings_pagination_grpc(
+                grpc_endpoint=grpc_endpoint,
+                query=query,
+                page_k=page_k,
+                pagination_limit=pagination_limit,
+            )
+        else:
+            run_vector_bindings_pagination(
+                vdb=vdb,
+                collection=collection,
+                query=query,
+                page_k=page_k,
+                pagination_limit=pagination_limit,
+                k_resolver=k_resolver,
+            )
+    elif use_adaptive:
+        if use_grpc:
+            run_vector_bindings_grpc(
+                grpc_endpoint=grpc_endpoint,
+                query=query,
+                k=seed_or_fixed_k,
+                use_adaptive=True,
+                multipliers=multipliers,
+                adaptive_jaccard=adaptive_jaccard,
+            )
+        else:
+            run_vector_bindings_adaptive(
+                vdb=vdb,
+                collection=collection,
+                query=query,
+                pattern=pattern,
+                seed_k=seed_or_fixed_k,
+                multipliers=multipliers,
+                jaccard_threshold=adaptive_jaccard,
+                log=log,
+                catalog_stability_floor=catalog_stability_floor,
+            )
+    elif use_grpc:
+        run_vector_bindings_grpc(
+            grpc_endpoint=grpc_endpoint,
+            query=query,
+            k=effective_k,
+            use_adaptive=False,
+            multipliers=multipliers,
+            adaptive_jaccard=adaptive_jaccard,
+        )
+    else:
+        run_vector_bindings(
+            vdb=vdb,
+            collection=collection,
+            query=query,
+            pattern=pattern,
+            k=effective_k,
+            log=log,
+        )
+
+
+def resolve_query_k(
+    *,
+    args: argparse.Namespace,
+    pattern: QueryPattern,
+    k_resolver: Optional[CatalogKResolver],
+) -> Tuple[Optional[int], int, int, Optional[int]]:
+    """Return (catalog query_k, seed_or_fixed_k, effective_k, catalog_stability_floor)."""
+    query_k = args.k
+    if (query_k is None or args.use_adaptive) and k_resolver is not None:
+        catalog_k = k_resolver.auto_k_for_pattern(
+            subject=pattern.subject,
+            predicate=pattern.predicate,
+            object_value=pattern.object_value,
+            object_type=pattern.object_type,
+        )
+        if catalog_k is not None:
+            query_k = catalog_k
+    seed_or_fixed_k = query_k if query_k is not None else (args.k if args.k is not None else 5000)
+    effective_k = milvus_safe_k(seed_or_fixed_k)
+    catalog_stability_floor: Optional[int] = None
+    if k_resolver is not None and k_resolver.available:
+        catalog_stability_floor = k_resolver.catalog_match_count(
+            subject=pattern.subject,
+            predicate=pattern.predicate,
+            object_value=pattern.object_value,
+            object_type=pattern.object_type,
+        )
+    return query_k, seed_or_fixed_k, effective_k, catalog_stability_floor
+
+
+def run_vector_bindings_grpc(
+    *,
+    grpc_endpoint: str,
+    query: str,
+    k: Optional[int],
+    use_adaptive: bool,
+    multipliers: Sequence[int],
+    adaptive_jaccard: float,
+) -> Tuple[List[Dict[str, Dict[str, str]]], List[Dict]]:
+    body = pattern_request_body_from_query(
+        query,
+        k=None if use_adaptive else k,
+        adaptive_multipliers=list(multipliers) if use_adaptive else None,
+        adaptive_jaccard=adaptive_jaccard if use_adaptive else None,
+        include_raw_hits=True,
+    )
+    result = query_pattern_grpc(grpc_endpoint, body)
+    return result.bindings, result.raw_matches
 
 
 def run_vector_bindings_adaptive(
@@ -404,19 +674,22 @@ def run_vector_bindings_adaptive(
     jaccard_threshold: float,
     log: bool,
     catalog_stability_floor: Optional[int] = None,
-) -> Tuple[List[Dict[str, Dict[str, str]]], int]:
+) -> Tuple[List[Dict[str, Dict[str, str]]], int, List[Dict]]:
     """Run adaptive escalation for a single query.
 
-    Returns (bindings, rounds_used). `rounds_used` is the index of the final
-    round that ran (0-based), useful for telemetry.
+    Returns (bindings, rounds_used, last_round_matches). `rounds_used` is the
+    index of the final round that ran (0-based), useful for telemetry.
 
     catalog_stability_floor: when set, stability-based early stop is allowed
         only once the post-filtered hit count reaches this catalog lower bound.
     """
     rounds_seen = {"n": 0}
+    last_matches: List[Dict] = []
 
     def _filter(matches: List[Dict], query_idx: int) -> Tuple[List[Dict], Set[int]]:
         rounds_seen["n"] += 1
+        nonlocal last_matches
+        last_matches = list(matches)
         return _matches_to_bindings(matches, pattern)
 
     final_rows = adaptive_batch_search(
@@ -431,7 +704,7 @@ def run_vector_bindings_adaptive(
         stability_count_floors=[catalog_stability_floor],
     )
     bindings = final_rows[0] if final_rows else []
-    return bindings, rounds_seen["n"]
+    return bindings, rounds_seen["n"], last_matches
 
 
 def jaccard(a: Set[str], b: Set[str]) -> float:
@@ -450,6 +723,29 @@ def precision_recall(tp: int, fp: int, fn: int) -> Tuple[float, float]:
     precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
     recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
     return precision, recall
+
+
+def compute_pr_metrics(
+    baseline_bindings: List[Dict[str, Dict[str, str]]],
+    candidate_bindings: List[Dict[str, Dict[str, str]]],
+) -> Dict[str, float | int | bool]:
+    baseline_ids = {binding_to_id(b) for b in baseline_bindings}
+    candidate_ids = {binding_to_id(b) for b in candidate_bindings}
+    tp = len(baseline_ids & candidate_ids)
+    fp = len(candidate_ids - baseline_ids)
+    fn = len(baseline_ids - candidate_ids)
+    precision, recall = precision_recall(tp, fp, fn)
+    return {
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "precision": precision,
+        "recall": recall,
+        "jaccard": jaccard(baseline_ids, candidate_ids),
+        "exact_match": baseline_ids == candidate_ids,
+        "baseline_count": len(baseline_ids),
+        "candidate_count": len(candidate_ids),
+    }
 
 
 def maybe_run_load_phase(args: argparse.Namespace, dim: int) -> None:
@@ -473,6 +769,8 @@ def maybe_run_load_phase(args: argparse.Namespace, dim: int) -> None:
         args.embedding_model,
         "--dim-adjustment",
         args.dim_adjustment,
+        "--component-fusion",
+        args.component_fusion,
         "--chunk-size",
         str(args.load_chunk_size),
         "--out-dir",
@@ -507,14 +805,25 @@ def write_outputs(payload: Dict, out_dir: Path) -> Tuple[Path, Path, Path]:
                 "avg_precision_pct",
                 "avg_recall_pct",
                 "mean_jaccard",
+                "avg_raw_precision",
+                "avg_raw_recall",
+                "mean_raw_jaccard",
                 "queries_total",
                 "passes_threshold",
                 "sp*_avg_precision",
                 "sp*_avg_recall",
+                "sp*_avg_raw_precision",
+                "sp*_avg_raw_recall",
                 "*po_avg_precision",
                 "*po_avg_recall",
+                "*po_avg_raw_precision",
+                "*po_avg_raw_recall",
                 "s*o_avg_precision",
                 "s*o_avg_recall",
+                "s*o_avg_raw_precision",
+                "s*o_avg_raw_recall",
+                "avg_vector_query_seconds",
+                "total_vector_query_seconds",
             ],
         )
         writer.writeheader()
@@ -528,14 +837,25 @@ def write_outputs(payload: Dict, out_dir: Path) -> Tuple[Path, Path, Path]:
                     "avg_precision_pct": row["avg_precision_pct"],
                     "avg_recall_pct": row["avg_recall_pct"],
                     "mean_jaccard": row["mean_jaccard"],
+                    "avg_raw_precision": row.get("avg_raw_precision"),
+                    "avg_raw_recall": row.get("avg_raw_recall"),
+                    "mean_raw_jaccard": row.get("mean_raw_jaccard"),
                     "queries_total": row["queries_total"],
                     "passes_threshold": row["passes_threshold"],
+                    "avg_vector_query_seconds": row.get("avg_vector_query_seconds"),
+                    "total_vector_query_seconds": row.get("total_vector_query_seconds"),
                     "sp*_avg_precision": bucket_metrics.get("sp*", {}).get("avg_precision"),
                     "sp*_avg_recall": bucket_metrics.get("sp*", {}).get("avg_recall"),
+                    "sp*_avg_raw_precision": bucket_metrics.get("sp*", {}).get("avg_raw_precision"),
+                    "sp*_avg_raw_recall": bucket_metrics.get("sp*", {}).get("avg_raw_recall"),
                     "*po_avg_precision": bucket_metrics.get("*po", {}).get("avg_precision"),
                     "*po_avg_recall": bucket_metrics.get("*po", {}).get("avg_recall"),
+                    "*po_avg_raw_precision": bucket_metrics.get("*po", {}).get("avg_raw_precision"),
+                    "*po_avg_raw_recall": bucket_metrics.get("*po", {}).get("avg_raw_recall"),
                     "s*o_avg_precision": bucket_metrics.get("s*o", {}).get("avg_precision"),
                     "s*o_avg_recall": bucket_metrics.get("s*o", {}).get("avg_recall"),
+                    "s*o_avg_raw_precision": bucket_metrics.get("s*o", {}).get("avg_raw_precision"),
+                    "s*o_avg_raw_recall": bucket_metrics.get("s*o", {}).get("avg_raw_recall"),
                 }
             )
 
@@ -555,9 +875,24 @@ def write_outputs(payload: Dict, out_dir: Path) -> Tuple[Path, Path, Path]:
                 "recall",
                 "jaccard",
                 "exact_match",
+                "raw_tp",
+                "raw_fp",
+                "raw_fn",
+                "raw_precision",
+                "raw_recall",
+                "raw_jaccard",
+                "raw_hit_count",
+                "raw_parseable_count",
+                "raw_binding_count",
                 "seed_k",
                 "adaptive_rounds",
                 "catalog_stability_floor",
+                "vector_query_seconds",
+                "pagination_page_k",
+                "pagination_limit",
+                "pagination_catalog_k",
+                "pages_fetched",
+                "milvus_hits_total",
             ],
         )
         writer.writeheader()
@@ -578,9 +913,24 @@ def write_outputs(payload: Dict, out_dir: Path) -> Tuple[Path, Path, Path]:
                         "recall": q["recall"],
                         "jaccard": q["jaccard"],
                         "exact_match": q["exact_match"],
+                        "raw_tp": q.get("raw_tp"),
+                        "raw_fp": q.get("raw_fp"),
+                        "raw_fn": q.get("raw_fn"),
+                        "raw_precision": q.get("raw_precision"),
+                        "raw_recall": q.get("raw_recall"),
+                        "raw_jaccard": q.get("raw_jaccard"),
+                        "raw_hit_count": q.get("raw_hit_count"),
+                        "raw_parseable_count": q.get("raw_parseable_count"),
+                        "raw_binding_count": q.get("raw_binding_count"),
                         "seed_k": q.get("seed_k"),
                         "adaptive_rounds": q.get("adaptive_rounds"),
                         "catalog_stability_floor": q.get("catalog_stability_floor"),
+                        "vector_query_seconds": q.get("vector_query_seconds"),
+                        "pagination_page_k": q.get("pagination_page_k"),
+                        "pagination_limit": q.get("pagination_limit"),
+                        "pagination_catalog_k": q.get("pagination_catalog_k"),
+                        "pages_fetched": q.get("pages_fetched"),
+                        "milvus_hits_total": q.get("milvus_hits_total"),
                     }
                 )
     return json_path, summary_csv_path, per_query_csv_path
@@ -603,6 +953,12 @@ def _parse_multipliers(raw: str) -> List[int]:
 
 def main() -> int:
     args = parse_args()
+    if args.use_pagination and args.use_adaptive:
+        raise ValueError("Cannot combine --use-pagination and --use-adaptive")
+    if args.use_pagination and args.k is None:
+        raise ValueError("--use-pagination requires --k (page batch size)")
+    if args.latency_warmup_queries < 0:
+        raise ValueError("--latency-warmup-queries must be >= 0")
     require_safe_collection(args.collection)
     dims = parse_dims(args.dimensions)
     queries = load_queries(args.queries_file)
@@ -610,13 +966,36 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     per_dimension = []
-    k_resolver = CatalogKResolver(catalog_path=Path(args.catalog_path)) if (args.k is None or args.use_adaptive) else None
+    use_catalog_k = (
+        args.k is None or args.use_adaptive or args.use_pagination or args.grpc_endpoint is not None
+    )
+    k_resolver = (
+        CatalogKResolver(
+            catalog_path=Path(args.catalog_path),
+            scale=args.catalog_k_scale,
+            min_k=args.catalog_min_k,
+        )
+        if use_catalog_k
+        else None
+    )
     multipliers = _parse_multipliers(args.adaptive_multipliers) if args.use_adaptive else []
+    use_grpc = args.grpc_endpoint is not None
+    if use_grpc:
+        print(f"gRPC vector path: {args.grpc_endpoint}")
     if args.use_adaptive:
-        max_multiplier = max(multipliers)
         print(
             f"Adaptive escalation enabled: multipliers={multipliers} "
             f"jaccard>={args.adaptive_jaccard}"
+        )
+    if args.use_pagination:
+        print(
+            f"Pagination enabled: page_k={args.k} "
+            f"limit={args.pagination_limit or '2*catalog_k'}"
+        )
+    if k_resolver is not None and k_resolver.available:
+        print(
+            f"Catalog k: scale={args.catalog_k_scale} min_k={args.catalog_min_k} "
+            f"path={args.catalog_path}"
         )
 
     for dim in dims:
@@ -625,115 +1004,231 @@ def main() -> int:
             print("Running load phase...")
             maybe_run_load_phase(args, dim)
 
-        vdb = VectorDataBase(
-            database_name=args.database_name,
-            host=args.host,
-            port=args.port,
-            embedding_model=args.embedding_model,
-            target_embedding_dim=dim,
-            dim_adjustment=args.dim_adjustment,
-        )
-        vdb.connect()
+        vdb: Optional[VectorDataBase] = None
+        if not use_grpc:
+            vdb = VectorDataBase(
+                database_name=args.database_name,
+                host=args.host,
+                port=args.port,
+                embedding_model=args.embedding_model,
+                target_embedding_dim=dim,
+                dim_adjustment=args.dim_adjustment,
+                component_fusion=args.component_fusion,
+            )
+            vdb.connect()
 
         query_rows = []
         precision_vals: List[float] = []
         recall_vals: List[float] = []
         jaccard_vals = []
+        raw_precision_vals: List[float] = []
+        raw_recall_vals: List[float] = []
+        raw_jaccard_vals: List[float] = []
+        vector_query_seconds_vals: List[float] = []
         bucket_precision: Dict[str, List[float]] = {}
         bucket_recall: Dict[str, List[float]] = {}
+        bucket_raw_precision: Dict[str, List[float]] = {}
+        bucket_raw_recall: Dict[str, List[float]] = {}
+
+        warmup_count = max(0, args.latency_warmup_queries)
+        if warmup_count > 0:
+            warmup_count = min(warmup_count, len(queries))
+            print(
+                f"Latency warmup: {warmup_count} untimed fetch(es) "
+                "(cold-start excluded from avg_vector_query_seconds)"
+            )
+            page_k = milvus_safe_k(int(args.k)) if args.use_pagination else 0
+            for _query_id, _bucket, warmup_query in queries[:warmup_count]:
+                warmup_pattern = parse_query_pattern(warmup_query)
+                _query_k, seed_or_fixed_k, effective_k, catalog_stability_floor = resolve_query_k(
+                    args=args,
+                    pattern=warmup_pattern,
+                    k_resolver=k_resolver,
+                )
+                run_vector_fetch_only(
+                    vdb=vdb,
+                    collection=args.collection,
+                    query=warmup_query,
+                    pattern=warmup_pattern,
+                    use_grpc=use_grpc,
+                    grpc_endpoint=args.grpc_endpoint or "",
+                    use_pagination=args.use_pagination,
+                    use_adaptive=args.use_adaptive,
+                    page_k=page_k,
+                    effective_k=effective_k,
+                    seed_or_fixed_k=seed_or_fixed_k,
+                    multipliers=multipliers,
+                    adaptive_jaccard=args.adaptive_jaccard,
+                    pagination_limit=args.pagination_limit,
+                    k_resolver=k_resolver,
+                    catalog_stability_floor=catalog_stability_floor,
+                    log=args.log,
+                )
 
         for query_idx, (query_id, bucket, query) in enumerate(queries, start=1):
             pattern = parse_query_pattern(query)
-            query_k = args.k
-            if (query_k is None or args.use_adaptive) and k_resolver is not None:
-                catalog_k = k_resolver.auto_k_for_pattern(
-                    subject=pattern.subject,
-                    predicate=pattern.predicate,
-                    object_value=pattern.object_value,
-                    object_type=pattern.object_type,
-                )
-                if catalog_k is not None:
-                    query_k = catalog_k
-            seed_or_fixed_k = query_k if query_k is not None else (args.k if args.k is not None else 5000)
-            effective_k = milvus_safe_k(seed_or_fixed_k)
+            query_k, seed_or_fixed_k, effective_k, catalog_stability_floor = resolve_query_k(
+                args=args,
+                pattern=pattern,
+                k_resolver=k_resolver,
+            )
 
             adaptive_rounds = None
-            catalog_stability_floor: Optional[int] = None
-            if args.use_adaptive:
-                if k_resolver is not None and k_resolver.available:
-                    catalog_stability_floor = k_resolver.catalog_match_count(
-                        subject=pattern.subject,
-                        predicate=pattern.predicate,
-                        object_value=pattern.object_value,
-                        object_type=pattern.object_type,
+            raw_matches: List[Dict] = []
+            pagination_telemetry: Optional[Dict] = None
+            if args.use_pagination:
+                page_k = milvus_safe_k(int(args.k))
+                catalog_k_val = query_k
+                resolved_limit = resolve_pagination_limit(
+                    page_k,
+                    catalog_k=catalog_k_val,
+                    explicit_limit=args.pagination_limit,
+                )
+                baseline_bindings = run_sparql_baseline(query, args.rdf_file, resolved_limit)
+                vector_query_start = perf_counter()
+                if use_grpc:
+                    vector_bindings, raw_matches, pagination_telemetry = (
+                        run_vector_bindings_pagination_grpc(
+                            grpc_endpoint=args.grpc_endpoint,
+                            query=query,
+                            page_k=page_k,
+                            pagination_limit=args.pagination_limit,
+                        )
                     )
+                else:
+                    vector_bindings, raw_matches, pagination_telemetry = (
+                        run_vector_bindings_pagination(
+                            vdb=vdb,
+                            collection=args.collection,
+                            query=query,
+                            page_k=page_k,
+                            pagination_limit=args.pagination_limit,
+                            k_resolver=k_resolver,
+                        )
+                    )
+                vector_query_seconds = perf_counter() - vector_query_start
+            elif args.use_adaptive:
                 ladder = build_k_ladder(seed_or_fixed_k, multipliers=tuple(multipliers))
                 baseline_limit = ladder[-1] if ladder else effective_k
                 baseline_bindings = run_sparql_baseline(query, args.rdf_file, baseline_limit)
-                vector_bindings, adaptive_rounds = run_vector_bindings_adaptive(
-                    vdb=vdb,
-                    collection=args.collection,
-                    query=query,
-                    pattern=pattern,
-                    seed_k=seed_or_fixed_k,
-                    multipliers=multipliers,
-                    jaccard_threshold=args.adaptive_jaccard,
-                    log=args.log,
-                    catalog_stability_floor=catalog_stability_floor,
-                )
+                vector_query_start = perf_counter()
+                if use_grpc:
+                    vector_bindings, raw_matches = run_vector_bindings_grpc(
+                        grpc_endpoint=args.grpc_endpoint,
+                        query=query,
+                        k=seed_or_fixed_k,
+                        use_adaptive=True,
+                        multipliers=multipliers,
+                        adaptive_jaccard=args.adaptive_jaccard,
+                    )
+                    adaptive_rounds = len(multipliers)
+                else:
+                    vector_bindings, adaptive_rounds, raw_matches = run_vector_bindings_adaptive(
+                        vdb=vdb,
+                        collection=args.collection,
+                        query=query,
+                        pattern=pattern,
+                        seed_k=seed_or_fixed_k,
+                        multipliers=multipliers,
+                        jaccard_threshold=args.adaptive_jaccard,
+                        log=args.log,
+                        catalog_stability_floor=catalog_stability_floor,
+                    )
+                vector_query_seconds = perf_counter() - vector_query_start
             else:
                 baseline_bindings = run_sparql_baseline(query, args.rdf_file, effective_k)
-                vector_bindings = run_vector_bindings(
-                    vdb=vdb,
-                    collection=args.collection,
-                    query=query,
-                    pattern=pattern,
-                    k=effective_k,
-                    log=args.log,
-                )
+                vector_query_start = perf_counter()
+                if use_grpc:
+                    vector_bindings, raw_matches = run_vector_bindings_grpc(
+                        grpc_endpoint=args.grpc_endpoint,
+                        query=query,
+                        k=effective_k,
+                        use_adaptive=False,
+                        multipliers=multipliers,
+                        adaptive_jaccard=args.adaptive_jaccard,
+                    )
+                else:
+                    vector_bindings, raw_matches = run_vector_bindings(
+                        vdb=vdb,
+                        collection=args.collection,
+                        query=query,
+                        pattern=pattern,
+                        k=effective_k,
+                        log=args.log,
+                    )
+                vector_query_seconds = perf_counter() - vector_query_start
 
-            baseline_ids = {binding_to_id(b) for b in baseline_bindings}
-            vector_ids = {binding_to_id(b) for b in vector_bindings}
+            post_metrics = compute_pr_metrics(baseline_bindings, vector_bindings)
+            raw_binding_list, raw_hit_count, raw_parseable_count = raw_bindings_from_matches(
+                raw_matches, pattern
+            )
+            raw_metrics = compute_pr_metrics(baseline_bindings, raw_binding_list)
+            raw_binding_count = raw_metrics["candidate_count"]
 
-            baseline_count = len(baseline_ids)
-            vector_count = len(vector_ids)
-            tp = len(baseline_ids & vector_ids)
-            fp = len(vector_ids - baseline_ids)
-            fn = len(baseline_ids - vector_ids)
-            precision, recall = precision_recall(tp, fp, fn)
-            overlap_jaccard = jaccard(baseline_ids, vector_ids)
-            exact_match = baseline_ids == vector_ids
-
-            precision_vals.append(precision)
-            recall_vals.append(recall)
-            jaccard_vals.append(overlap_jaccard)
-            bucket_precision.setdefault(bucket, []).append(precision)
-            bucket_recall.setdefault(bucket, []).append(recall)
+            precision_vals.append(float(post_metrics["precision"]))
+            recall_vals.append(float(post_metrics["recall"]))
+            jaccard_vals.append(float(post_metrics["jaccard"]))
+            raw_precision_vals.append(float(raw_metrics["precision"]))
+            raw_recall_vals.append(float(raw_metrics["recall"]))
+            raw_jaccard_vals.append(float(raw_metrics["jaccard"]))
+            vector_query_seconds_vals.append(vector_query_seconds)
+            bucket_precision.setdefault(bucket, []).append(float(post_metrics["precision"]))
+            bucket_recall.setdefault(bucket, []).append(float(post_metrics["recall"]))
+            bucket_raw_precision.setdefault(bucket, []).append(float(raw_metrics["precision"]))
+            bucket_raw_recall.setdefault(bucket, []).append(float(raw_metrics["recall"]))
 
             row = {
                 "query_id": query_id,
                 "bucket": bucket,
                 "query": query,
-                "baseline_count": baseline_count,
-                "vector_count": vector_count,
-                "tp": tp,
-                "fp": fp,
-                "fn": fn,
-                "precision": precision,
-                "recall": recall,
-                "jaccard": overlap_jaccard,
-                "exact_match": exact_match,
+                "baseline_count": post_metrics["baseline_count"],
+                "vector_count": post_metrics["candidate_count"],
+                "tp": post_metrics["tp"],
+                "fp": post_metrics["fp"],
+                "fn": post_metrics["fn"],
+                "precision": post_metrics["precision"],
+                "recall": post_metrics["recall"],
+                "jaccard": post_metrics["jaccard"],
+                "exact_match": post_metrics["exact_match"],
+                "raw_tp": raw_metrics["tp"],
+                "raw_fp": raw_metrics["fp"],
+                "raw_fn": raw_metrics["fn"],
+                "raw_precision": raw_metrics["precision"],
+                "raw_recall": raw_metrics["recall"],
+                "raw_jaccard": raw_metrics["jaccard"],
+                "raw_hit_count": raw_hit_count,
+                "raw_parseable_count": raw_parseable_count,
+                "raw_binding_count": raw_binding_count,
                 "seed_k": seed_or_fixed_k,
                 "adaptive_rounds": adaptive_rounds,
                 "catalog_stability_floor": catalog_stability_floor,
+                "vector_query_seconds": round(vector_query_seconds, 4),
+                "pagination_page_k": (
+                    pagination_telemetry.get("page_k") if pagination_telemetry else None
+                ),
+                "pagination_limit": (
+                    pagination_telemetry.get("resolved_limit") if pagination_telemetry else None
+                ),
+                "pagination_catalog_k": (
+                    pagination_telemetry.get("catalog_k") if pagination_telemetry else None
+                ),
+                "pages_fetched": (
+                    pagination_telemetry.get("pages_fetched") if pagination_telemetry else None
+                ),
+                "milvus_hits_total": (
+                    pagination_telemetry.get("milvus_hits_total") if pagination_telemetry else None
+                ),
             }
             query_rows.append(row)
             if args.log or query_idx <= 10 or query_idx % 250 == 0:
                 rounds_str = f" rounds={adaptive_rounds}" if adaptive_rounds is not None else ""
                 print(
                     f"{query_id} ({bucket}): seed_k={seed_or_fixed_k}{rounds_str} "
-                    f"|GT|={baseline_count} |RET|={vector_count} "
-                    f"TP={tp} FP={fp} FN={fn} P={precision:.4f} R={recall:.4f}"
+                    f"|GT|={post_metrics['baseline_count']} |RET|={post_metrics['candidate_count']} "
+                    f"TP={post_metrics['tp']} FP={post_metrics['fp']} FN={post_metrics['fn']} "
+                    f"P={post_metrics['precision']:.4f} R={post_metrics['recall']:.4f} "
+                    f"raw_P={raw_metrics['precision']:.4f} raw_R={raw_metrics['recall']:.4f} "
+                    f"vector={vector_query_seconds * 1000:.1f}ms"
                 )
 
         total_queries = len(queries)
@@ -742,51 +1237,100 @@ def main() -> int:
         avg_precision_pct = avg_precision * 100.0
         avg_recall_pct = avg_recall * 100.0
         mean_jaccard = sum(jaccard_vals) / len(jaccard_vals) if jaccard_vals else 0.0
+        avg_raw_precision = (
+            sum(raw_precision_vals) / len(raw_precision_vals) if raw_precision_vals else 0.0
+        )
+        avg_raw_recall = sum(raw_recall_vals) / len(raw_recall_vals) if raw_recall_vals else 0.0
+        mean_raw_jaccard = (
+            sum(raw_jaccard_vals) / len(raw_jaccard_vals) if raw_jaccard_vals else 0.0
+        )
+        total_vector_query_seconds = sum(vector_query_seconds_vals)
+        avg_vector_query_seconds = (
+            total_vector_query_seconds / len(vector_query_seconds_vals)
+            if vector_query_seconds_vals
+            else 0.0
+        )
         threshold = args.accuracy_threshold_pct / 100.0
         passes_threshold = avg_precision >= threshold and avg_recall >= threshold
 
         bucket_metrics: Dict[str, Dict[str, float]] = {}
-        for bucket_name in sorted(set(bucket_precision.keys()) | set(bucket_recall.keys())):
+        all_bucket_names = sorted(
+            set(bucket_precision.keys())
+            | set(bucket_recall.keys())
+            | set(bucket_raw_precision.keys())
+            | set(bucket_raw_recall.keys())
+        )
+        for bucket_name in all_bucket_names:
             p_vals = bucket_precision.get(bucket_name, [])
             r_vals = bucket_recall.get(bucket_name, [])
+            raw_p_vals = bucket_raw_precision.get(bucket_name, [])
+            raw_r_vals = bucket_raw_recall.get(bucket_name, [])
             bucket_metrics[bucket_name] = {
                 "count": float(len(p_vals)),
                 "avg_precision": (sum(p_vals) / len(p_vals)) if p_vals else 0.0,
                 "avg_recall": (sum(r_vals) / len(r_vals)) if r_vals else 0.0,
+                "avg_raw_precision": (sum(raw_p_vals) / len(raw_p_vals)) if raw_p_vals else 0.0,
+                "avg_raw_recall": (sum(raw_r_vals) / len(raw_r_vals)) if raw_r_vals else 0.0,
             }
 
         dim_payload = {
             "dimension": dim,
             "queries_total": total_queries,
+            "latency_warmup_queries": warmup_count,
             "avg_precision": avg_precision,
             "avg_recall": avg_recall,
             "avg_precision_pct": avg_precision_pct,
             "avg_recall_pct": avg_recall_pct,
             "mean_jaccard": mean_jaccard,
+            "avg_raw_precision": avg_raw_precision,
+            "avg_raw_recall": avg_raw_recall,
+            "mean_raw_jaccard": mean_raw_jaccard,
             "passes_threshold": passes_threshold,
+            "avg_vector_query_seconds": round(avg_vector_query_seconds, 4),
+            "total_vector_query_seconds": round(total_vector_query_seconds, 2),
             "bucket_metrics": bucket_metrics,
             "queries": query_rows,
         }
         per_dimension.append(dim_payload)
         print(
             f"dim={dim} avg_precision={avg_precision_pct:.2f}% avg_recall={avg_recall_pct:.2f}% "
+            f"avg_raw_precision={avg_raw_precision * 100:.2f}% "
+            f"avg_raw_recall={avg_raw_recall * 100:.2f}% "
+            f"avg_vector_query={avg_vector_query_seconds * 1000:.1f}ms "
             f"(threshold={args.accuracy_threshold_pct:.2f}% each)"
         )
 
     passing_dims = sorted([d["dimension"] for d in per_dimension if d["passes_threshold"]])
     lowest_passing_dimension = passing_dims[0] if passing_dims else None
 
+    k_mode = "fixed"
+    if args.use_pagination:
+        k_mode = "pagination"
+    elif args.use_adaptive and args.k is None:
+        k_mode = "catalog_adaptive_x1" if multipliers == [1] else "catalog_adaptive"
+    elif args.k is None:
+        k_mode = "catalog_auto"
+
     payload = {
         "timestamp_utc": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
         "collection": args.collection,
         "dimensions_tested": dims,
         "k": args.k,
+        "k_mode": k_mode,
+        "catalog_k_scale": args.catalog_k_scale,
+        "catalog_min_k": args.catalog_min_k,
+        "component_fusion": args.component_fusion,
+        "grpc_endpoint": args.grpc_endpoint,
         "metric_primary": "precision_recall",
+        "metric_secondary": "raw_retrieval_precision_recall",
         "accuracy_threshold_pct": args.accuracy_threshold_pct,
         "run_load_phase": args.run_load_phase,
         "use_adaptive": args.use_adaptive,
+        "use_pagination": args.use_pagination,
+        "pagination_limit": args.pagination_limit,
         "adaptive_multipliers": multipliers if args.use_adaptive else None,
         "adaptive_jaccard": args.adaptive_jaccard if args.use_adaptive else None,
+        "latency_warmup_queries": args.latency_warmup_queries,
         "per_dimension": per_dimension,
         "lowest_passing_dimension": lowest_passing_dimension,
     }

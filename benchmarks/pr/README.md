@@ -19,6 +19,13 @@ Safety behavior:
 
 ## Metrics
 
+The benchmark reports **two** precision/recall tracks per query.
+
+### Post-filter P/R (primary)
+
+Bindings returned after `string_part_match` post-filter (same as the endpoint).
+Used for pass/fail threshold, F1@K plots, and dimension selection.
+
 For each query and dimension:
 
 - `TP`, `FP`, `FN`
@@ -33,6 +40,23 @@ Per dimension:
 - bucket-level averages for `sp*`, `*po`, `s*o`
 
 A dimension passes when both `avg_precision` and `avg_recall` are at least `--accuracy-threshold-pct / 100`.
+
+### Raw retrieval P/R (diagnostic)
+
+Bindings extracted from **all parseable** Milvus top-k hits, with **no**
+pattern post-filter. Measures vector-neighbor quality before filtering.
+
+- Per query: `raw_tp`, `raw_fp`, `raw_fn`, `raw_precision`, `raw_recall`,
+  `raw_jaccard`, plus `raw_hit_count`, `raw_parseable_count`, `raw_binding_count`
+- Per dimension: `avg_raw_precision`, `avg_raw_recall`, `mean_raw_jaccard`
+
+Raw precision is typically lower than post-filter (non-matching neighbors become
+FPs). Raw recall can be higher when GT triples are in top-k but post-filter
+rejects them.
+
+**gRPC runs:** raw hits are streamed from the server (`include_raw_hits=true`)
+from the **same** Milvus search used for post-filter results (final adaptive
+round k when escalating).
 
 ## Dimension configuration
 
@@ -56,26 +80,68 @@ A dimension passes when both `avg_precision` and `avg_recall` are at least `--ac
 - The `--k 5000` shown in the commands below is just an illustrative fixed value,
   not a default. Drop the `--k` flag to use auto-k.
 
-## 1) Generate 3000 random queries
+## 1) Generate query sets
 
-From `vector-endpoint` root:
+From `vector-endpoint/benchmarks/pr`:
+
+### Dim-sweep profile (recommended for PR dynamic sweep)
+
+Cardinality-weighted ~800 queries tuned for dimension stress testing:
+
+| Bucket | Count | Rule |
+|--------|-------|------|
+| `*po` | 500 | All **67** keys with count ≥ 100; remainder split evenly between count **10–24** and **25–99** |
+| `sp*` | 250 | Count **2–7** only, evenly across exact counts |
+| `s*o` | 50 | All **37** count=2 keys + fill from count=1 |
 
 ```bash
 cd benchmarks/pr
 ../../.venv/bin/python generate_random_queries.py \
+  --profile dim-sweep \
   --input-file ../../data/nts/RLUBM_cleaned.nt \
   --seed 42 \
-  --sp-count 1000 \
-  --po-count 1000 \
-  --so-count 1000 \
-  --out results/random_queries_3000.json
+  --sp-count 250 --po-count 500 --so-count 50
 ```
 
-This creates a reproducible mixed query set:
+Writes:
 
-- 1000 `sp*`
-- 1000 `*po`
-- 1000 `s*o`
+- `results/PR_dynamic_sweep/random_queries_dim_sweep.json` (sweep default)
+- `results/random_queries_dim_sweep.json` (copy)
+
+Each query includes `expected_count` and `sampling_band` (for `*po` bands:
+`large`, `mid_10_24`, `mid_25_99`).
+
+### Legacy stratified profile (archived)
+
+Equal 1000/1000/1000 with even spread across all result-count bins:
+
+```bash
+../../.venv/bin/python generate_random_queries.py \
+  --profile legacy-stratified \
+  --input-file ../../data/nts/RLUBM_cleaned.nt \
+  --out results/archive/query_sets/random_queries_3000_stratified.json
+```
+
+Uniform random keys (no stratification):
+
+```bash
+../../.venv/bin/python generate_random_queries.py \
+  --profile legacy-stratified \
+  --no-stratify-counts \
+  --out results/archive/query_sets/random_queries_3000.json
+```
+
+### Query file reference
+
+| File | Purpose |
+|------|---------|
+| `results/PR_dynamic_sweep/random_queries_dim_sweep.json` | **Active** dim-sweep weighted set |
+| `results/archive/query_sets/random_queries_3000_stratified.json` | Archived equal-bucket stratified set |
+| `results/archive/query_sets/random_queries_3000.json` | Archived legacy uniform random set |
+
+Benchmark results under `PR_dynamic_sweep/dim*` from before the dim-sweep query
+file used the archived stratified set and are **not directly comparable** to new
+runs on `random_queries_dim_sweep.json`.
 
 ## 2) Load phase (optional standalone)
 
@@ -105,7 +171,7 @@ Outputs:
   --collection dim_benchmark \
   --dimensions 8,16,32,64,128,256,384 \
   --dim-adjustment truncate \
-  --queries-file results/random_queries_3000.json \
+  --queries-file results/archive/query_sets/random_queries_3000.json \
   --rdf-file ../../data/nts/RLUBM_cleaned.nt \
   --k 5000 \
   --out-dir results
@@ -120,7 +186,7 @@ Outputs:
   --dim-adjustment truncate \
   --run-load-phase \
   --load-input-file ../../data/nts/RLUBM_cleaned.nt \
-  --queries-file results/random_queries_3000.json \
+  --queries-file results/archive/query_sets/random_queries_3000.json \
   --rdf-file ../../data/nts/RLUBM_cleaned.nt \
   --k 5000 \
   --accuracy-threshold-pct 95 \
@@ -144,6 +210,81 @@ Outputs:
 
 - `results/vector_dim_pr_<timestamp>_precision_recall_vs_dim.png`
 - `results/vector_dim_pr_<timestamp>_bucket_precision_recall.png`
+
+## PR dynamic sweep (gRPC + catalog k)
+
+Redo of the dimension P/R sweep using **catalog-based k** (not fixed `k=5000`)
+over gRPC. Each dim: drop/reload `dim_benchmark` only, restart `grpc_app`, run
+the **dim-sweep weighted** query set (~800 queries, cardinality-heavy `*po`).
+
+**k policy:** `seed_k = max(10, ceil(catalog_count × 1.2))` per query.
+`--use-adaptive --adaptive-multipliers 1` runs exactly one search at that k (no
+10×/100× escalation).
+
+**Component fusion:** `run_one_dim.sh` defaults to Hadamard fusion
+(`COMPONENT_FUSION=hadamard`). Pass `--component-fusion` to the load/benchmark
+scripts and set `VECTOR_COMPONENT_FUSION` on `grpc_app`. Concat remains the
+library default elsewhere. Hadamard stores **d**-dim vectors (not `3×d`); missing
+S/P/O slots use identity (ones) in the product, not zero vectors. Compare recall
+at equal storage bytes when writing up results (e.g. Hadamard @ 384 vs concat @ 128
+per component).
+
+**Results layout:**
+
+```
+results/
+  archive/PR_fixed_k5000_sweep/   # old fixed-k5000 dim runs
+  archive/query_sets/             # archived query JSON (legacy / stratified)
+  PR_dynamic_sweep/
+    random_queries_dim_sweep.json
+    load_phase/                   # catalog_dim{N}.pkl per dim
+    dim8/                           # JSON/CSV + grpc_server.log per dim
+    dim16/
+    ...
+```
+
+### Prerequisites
+
+1. Milvus up (`configs/milvus.yaml`, `common.topKLimit: 200000`).
+2. No other `grpc_app` on port 50051 (`pkill -f vector_endpoint.grpc_app` if needed).
+3. `comunica-sparql-file` on PATH (SPARQL baseline).
+
+### Single dimension (smoke)
+
+From `vector-endpoint/benchmarks/pr`:
+
+```bash
+./run_one_dim.sh 8
+```
+
+This runs: load RLUBM → `dim_benchmark` at dim 8 → restart gRPC with
+`VECTOR_COLLECTION=dim_benchmark`, `VECTOR_TARGET_EMBEDDING_DIM=8`, matching
+catalog → benchmark dim-sweep queries via gRPC.
+
+### Full sweep (8 → 384)
+
+```bash
+./run_PR_dynamic_sweep.sh
+```
+
+Runs dims `8,16,32,64,128,256,384` sequentially. Production `version_5` is never
+touched; only `dim_benchmark` is dropped/reloaded each iteration.
+
+### Manual benchmark (after load + gRPC already running)
+
+```bash
+../../.venv/bin/python run_vector_dim_accuracy_benchmark.py \
+  --collection dim_benchmark \
+  --dimensions 8 \
+  --queries-file results/PR_dynamic_sweep/random_queries_dim_sweep.json \
+  --rdf-file ../../data/nts/RLUBM_cleaned.nt \
+  --catalog-path results/PR_dynamic_sweep/load_phase/catalog_dim8.pkl \
+  --catalog-k-scale 1.2 \
+  --use-adaptive \
+  --adaptive-multipliers 1 \
+  --grpc-endpoint 127.0.0.1:50051 \
+  --out-dir results/PR_dynamic_sweep/dim8
+```
 
 ## LUBM Q1–Q14 join benchmark (`run_lubm_pr_benchmark.py`)
 
@@ -187,6 +328,29 @@ tuple count from `Query_Types.txt`). JSON output includes
 
 Requires `catalog.pkl` from the same load as Milvus (`--catalog-path` defaults
 to `vector-endpoint/catalog.pkl`).
+
+### Pagination k (Milvus search iterator, client-driven pages)
+
+Fourth k policy: **`k_mode: "pagination"`** with **`k`** as Milvus page
+`batch_size` and optional **`limit`** (default **`2 × catalog_k`** per pattern).
+The client loops `QueryPatternPage` (gRPC) or POST `/vector` with `cursor` until
+`pagination.done` is true.
+
+Dim accuracy benchmark (requires gRPC server with pagination support):
+
+```bash
+../../.venv/bin/python run_vector_dim_accuracy_benchmark.py \
+  --collection version_5 \
+  --grpc-endpoint 127.0.0.1:50051 \
+  --use-pagination \
+  --k 500 \
+  --catalog-path ../../catalog.pkl \
+  --catalog-k-scale 1.2 \
+  --out-dir results/pagination_sweep
+```
+
+Optional `--pagination-limit` caps total Milvus hits scanned (default
+`2 × catalog_k`). Cannot combine with `--use-adaptive`.
 
 ### Adaptive k (catalog seed + multipliers per BGP)
 
@@ -242,7 +406,7 @@ Use this when you want to manually inspect false queries from a specific run (no
   --dimension 128 \
   --k 5000 \
   --per-query-csv results/vector_dim_pr_<timestamp>_per_query.csv \
-  --queries-file results/random_queries_3000.json \
+  --queries-file results/archive/query_sets/random_queries_3000.json \
   --limit-queries 5 \
   --out-dir results/debug \
   --log
@@ -256,7 +420,7 @@ Use this when you want to manually inspect false queries from a specific run (no
   --dimension 128 \
   --k 5000 \
   --per-query-csv results/vector_dim_pr_<timestamp>_per_query.csv \
-  --queries-file results/random_queries_3000.json \
+  --queries-file results/archive/query_sets/random_queries_3000.json \
   --out-dir results/debug
 ```
 

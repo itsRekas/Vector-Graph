@@ -51,18 +51,14 @@ def iter_adaptive_batch_search(
     milvus_max_topk: int = 200000,
     log: bool = False,
     stability_count_floors: Optional[list[Optional[int]]] = None,
+    on_final_round: Callable[[int, int, list[dict]], None] | None = None,
 ) -> Iterator[tuple[int, list[dict]]]:
     """Run per-query k-escalation, yielding ``(query_index, rows)`` as each query finalizes.
 
-    Same algorithm as :func:`adaptive_batch_search`, but emits each query's result rows
-    the moment it stops escalating (stable or ladder exhausted) instead of buffering all
-    queries until the end. This lets the caller stream finalized rows to the client so
-    client-side work overlaps the server's remaining adaptive rounds.
-
-    Emission order is finalization order (selective queries first), not value-row order;
-    acceptable for SPARQL bag semantics. See :func:`adaptive_batch_search` for argument
-    documentation; the only difference is that finalization is surfaced via ``yield``
-    rather than the ``on_query_finalized`` callback.
+    Emits each query when escalation stops (stable or ladder exhausted) without
+    waiting for slower queries. Order is finalization order, not value-row index
+    order (valid under SPARQL bag semantics). See :func:`adaptive_batch_search`
+    for shared parameters.
     """
     n = len(search_queries)
     if n == 0:
@@ -83,6 +79,8 @@ def iter_adaptive_batch_search(
 
     prev_ids: list[Optional[set[int]]] = [None] * n
     final_rows: list[list[dict]] = [[] for _ in range(n)]
+    last_matches: list[list[dict]] = [[] for _ in range(n)]
+    last_k: list[int] = [0] * n
     active: set[int] = set(range(n))
 
     out_fields = list(output_fields)
@@ -95,6 +93,8 @@ def iter_adaptive_batch_search(
         for i in list(active):
             if round_idx >= len(ladders[i]):
                 active.discard(i)
+                if on_final_round is not None and last_matches[i]:
+                    on_final_round(i, last_k[i], last_matches[i])
                 yield i, final_rows[i]
                 continue
             groups[ladders[i][round_idx]].append(i)
@@ -123,6 +123,8 @@ def iter_adaptive_batch_search(
                 if local_idx >= len(results):
                     continue
                 matches = results[local_idx].get("matches", [])
+                last_matches[i] = list(matches)
+                last_k[i] = k
                 rows, ids = filter_fn(matches, i)
                 final_rows[i] = rows
 
@@ -140,9 +142,13 @@ def iter_adaptive_batch_search(
                 prev_ids[i] = ids
                 if stopped:
                     active.discard(i)
+                    if on_final_round is not None:
+                        on_final_round(i, k, last_matches[i])
                     yield i, final_rows[i]
 
     for i in list(active):
+        if on_final_round is not None and last_matches[i]:
+            on_final_round(i, last_k[i], last_matches[i])
         yield i, final_rows[i]
 
 
@@ -160,37 +166,35 @@ def adaptive_batch_search(
     log: bool = False,
     stability_count_floors: Optional[list[Optional[int]]] = None,
     on_query_finalized: Callable[[int, list[dict]], None] | None = None,
+    on_final_round: Callable[[int, int, list[dict]], None] | None = None,
 ) -> list[list[dict]]:
     """Run per-query k-escalation with stability-based early stopping.
 
-    Buffered, backward-compatible wrapper over :func:`iter_adaptive_batch_search` that
-    collects every query's rows and returns them. Prefer ``iter_adaptive_batch_search``
-    when you want to stream finalized rows incrementally.
+    Collects all query results into a list. Use :func:`iter_adaptive_batch_search`
+    for incremental emission.
 
     Args:
-        vdb: VectorDataBase-like object exposing a `search(...)` method.
+        vdb: VectorDataBase-like object with a ``search(...)`` method.
         collection_name: Milvus collection name.
-        search_queries: list of query dicts (one per value_row) already built
-            by the caller. They are passed as `query_texts` to `vdb.search`.
-        seed_ks: list of seed k values, one per `search_queries` entry.
-        filter_fn: callable `(matches, query_index) -> (rows, filtered_ids)`.
-            The caller provides this as a closure bound to the per-row
-            validation context.
-        multipliers: ladder multipliers applied to each seed_k.
-        jaccard_threshold: near-stability threshold (default 0.99).
-        output_fields: fields requested from `vdb.search`.
-        milvus_max_topk: cap used when building ladders.
-        log: when True, prints per-round stability diagnostics.
-        stability_count_floors: optional per-query catalog lower bound on the
-            post-filtered id set size. Escalation continues while below the
-            floor even if Jaccard is stable. Per-query ``None`` skips the floor.
-            Omit the argument entirely to disable floors for all queries.
-        on_query_finalized: when set, called with ``(query_index, rows)`` each time
-            a query stops escalating (stable or ladder exhausted).
+        search_queries: One query dict per value row; passed as ``query_texts``.
+        seed_ks: Seed k per ``search_queries`` entry.
+        filter_fn: ``(matches, query_index) -> (rows, filtered_ids)``; typically
+            a closure over per-row validation context.
+        multipliers: Ladder multipliers applied to each seed k.
+        jaccard_threshold: Near-stability threshold (default 0.99).
+        output_fields: Fields requested from ``vdb.search``.
+        milvus_max_topk: Cap used when building ladders.
+        log: Print per-round stability diagnostics.
+        stability_count_floors: Optional per-query catalog floor on post-filtered
+            id set size. Escalation continues while below the floor even if
+            Jaccard is stable. Per-query ``None`` skips the floor. Omit to
+            disable floors for all queries.
+        on_query_finalized: Called with ``(query_index, rows)`` when a query
+            stops escalating.
 
     Returns:
-        `final_rows[i]` is the list of result rows for query `i` at the round
-        where it stopped (or the last ladder rung if it never stabilized).
+        ``final_rows[i]`` — result rows for query ``i`` at its stop round
+        (or the last ladder rung if never stable).
     """
     final_rows: list[list[dict]] = [[] for _ in range(len(search_queries))]
     for i, rows in iter_adaptive_batch_search(
@@ -205,6 +209,7 @@ def adaptive_batch_search(
         milvus_max_topk=milvus_max_topk,
         log=log,
         stability_count_floors=stability_count_floors,
+        on_final_round=on_final_round,
     ):
         final_rows[i] = rows
         if on_query_finalized is not None:

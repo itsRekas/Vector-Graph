@@ -1,4 +1,4 @@
-"""Pattern BGP execution: stream or collect result rows for HTTP and gRPC."""
+"""Pattern BGP execution for HTTP and gRPC endpoints."""
 
 from __future__ import annotations
 
@@ -17,7 +17,21 @@ from vector_endpoint.bgp_log import (
 )
 from vector_endpoint.db.VectorDataBase import VectorDataBase
 from vector_endpoint.rdf_utils import parse_rdf_triple
-from vector_endpoint.server_state import AUTO_K_RESOLVER, VECTOR_COLLECTION_NAME, vdb
+from vector_endpoint.pagination_sessions import resolve_session_id
+def _collection_name() -> str:
+    return os.getenv("VECTOR_COLLECTION", "version_5")
+
+
+def _default_resolver() -> CatalogKResolver:
+    from vector_endpoint.server_state import AUTO_K_RESOLVER
+
+    return AUTO_K_RESOLVER
+
+
+def _default_vdb() -> VectorDataBase | None:
+    from vector_endpoint.server_state import vdb
+
+    return vdb
 
 
 def adaptive_multipliers_from_request(json_data: dict) -> tuple[int, ...]:
@@ -55,11 +69,12 @@ def search_query_has_bound_constant(sq: dict) -> bool:
 
 
 def bump_seed_for_join_extension(seed: int, sq: dict, *, values: list[dict]) -> int:
-    if not values:
-        return seed
-    if search_query_has_bound_constant(sq):
-        return max(seed, join_bound_min_k())
     return seed
+    # if not values:
+    #     return seed
+    # if search_query_has_bound_constant(sq):
+    #     return max(seed, join_bound_min_k())
+    # return seed
 
 
 def _bgp_pattern_context(
@@ -122,6 +137,23 @@ def log_bgp_fetch(
     )
 
 
+def resolve_k_mode(json_data: dict, query_input: Optional["PatternQueryInput"] = None) -> str:
+    if resolve_session_id(json_data):
+        return "pagination"
+    if query_input and query_input.session:
+        return "pagination"
+    raw = json_data.get("k_mode") or (query_input.k_mode if query_input else None)
+    if raw in ("fixed", "adaptive", "pagination"):
+        return str(raw)
+    if json_data.get("k_mode") == "pagination" or (query_input and query_input.k_mode == "pagination"):
+        return "pagination"
+    if json_data.get("k") is not None or (query_input and query_input.k is not None):
+        if raw == "pagination":
+            return "pagination"
+        return "fixed"
+    return "adaptive"
+
+
 @dataclass
 class PatternQueryInput:
     pattern: dict
@@ -130,16 +162,47 @@ class PatternQueryInput:
     k: Optional[int] = None
     adaptive_multipliers: tuple[int, ...] = (1, 10, 100, 1000)
     adaptive_jaccard: float = 0.99
+    include_raw_hits: bool = False
+    k_mode: Optional[str] = None
+    pagination_limit: Optional[int] = None
+    session: Optional[str] = None
+    cursor: Optional[str] = None
+    page: Optional[int] = None
+    advance: bool = False
+    cancel: bool = False
 
     @classmethod
     def from_json(cls, json_data: dict) -> PatternQueryInput:
-        requested = json_data.get("k") or json_data.get("limit")
+        k_mode_raw = json_data.get("k_mode")
+        k_mode = str(k_mode_raw) if k_mode_raw in ("fixed", "adaptive", "pagination") else None
         explicit_k: Optional[int] = None
-        if requested is not None:
+        pagination_limit: Optional[int] = None
+        if k_mode == "pagination":
+            if json_data.get("k") is not None:
+                try:
+                    explicit_k = int(json_data["k"])
+                except (ValueError, TypeError):
+                    explicit_k = None
+            if json_data.get("limit") is not None:
+                try:
+                    pagination_limit = int(json_data["limit"])
+                except (ValueError, TypeError):
+                    pagination_limit = None
+        else:
+            requested = json_data.get("k") or json_data.get("limit")
+            if requested is not None:
+                try:
+                    explicit_k = int(requested)
+                except (ValueError, TypeError):
+                    explicit_k = None
+        session_val = json_data.get("session") or json_data.get("cursor")
+        session = str(session_val) if session_val else None
+        page: Optional[int] = None
+        if json_data.get("page") is not None:
             try:
-                explicit_k = int(requested)
+                page = int(json_data["page"])
             except (ValueError, TypeError):
-                explicit_k = None
+                page = None
         return cls(
             pattern=json_data.get("pattern", {}),
             vars=list(json_data.get("vars", [])),
@@ -147,17 +210,43 @@ class PatternQueryInput:
             k=explicit_k,
             adaptive_multipliers=adaptive_multipliers_from_request(json_data),
             adaptive_jaccard=adaptive_jaccard_from_request(json_data),
+            include_raw_hits=bool(json_data.get("include_raw_hits", False)),
+            k_mode=k_mode,
+            pagination_limit=pagination_limit,
+            session=session,
+            cursor=session,
+            page=page,
+            advance=bool(json_data.get("next", False)),
+            cancel=bool(json_data.get("cancel", False)),
         )
 
 
-def stream_pattern_rows(
-    query_input: PatternQueryInput,
-    *,
-    collection_name: str = VECTOR_COLLECTION_NAME,
-    database: VectorDataBase | None = vdb,
-    resolver: CatalogKResolver = AUTO_K_RESOLVER,
-) -> Iterator[dict]:
-    """Yield result binding rows as each value-row query finalizes."""
+@dataclass
+class RawSearchResult:
+    value_row_index: int
+    k_used: int
+    hits: list[dict]
+
+
+@dataclass
+class PatternStreamEvent:
+    row: Optional[dict] = None
+    raw_search: Optional[RawSearchResult] = None
+
+
+@dataclass
+class BgpExecutionState:
+    variables: list[str]
+    values: list[dict]
+    search_queries: list[dict]
+    validation_info_list: list[dict]
+    subject: Any
+    predicate: Any
+    obj: Any
+    pattern_variable_roles: dict[str, str]
+
+
+def build_bgp_execution_state(query_input: PatternQueryInput) -> BgpExecutionState:
     pattern = query_input.pattern
     variables = query_input.vars
     values = list(query_input.values) if query_input.values else [{}]
@@ -309,6 +398,73 @@ def stream_pattern_rows(
         search_queries.append(search_query)
         validation_info_list.append(validation_info)
 
+    return BgpExecutionState(
+        variables=variables,
+        values=values,
+        search_queries=search_queries,
+        validation_info_list=validation_info_list,
+        subject=subject,
+        predicate=predicate,
+        obj=obj,
+        pattern_variable_roles=pattern_variable_roles,
+    )
+
+
+def make_bgp_filter_fn(state: BgpExecutionState) -> Callable[[list[dict], int], tuple[list[dict], set[int]]]:
+    def filter_fn(matches, query_idx):
+        vinfo = (
+            state.validation_info_list[query_idx]
+            if query_idx < len(state.validation_info_list)
+            else {}
+        )
+        return filter_matches_to_rows(
+            matches,
+            pattern_subject=state.subject,
+            pattern_predicate=state.predicate,
+            pattern_object=state.obj,
+            validation_info=vinfo,
+            variables=state.variables,
+            pattern_variable_roles=state.pattern_variable_roles,
+            value_row=state.values[query_idx],
+            parse_rdf_triple=parse_rdf_triple,
+            log=False,
+        )
+
+    return filter_fn
+
+
+def stream_pattern_rows(
+    query_input: PatternQueryInput,
+    **kwargs: Any,
+) -> Iterator[dict]:
+    """Yield post-filter binding rows."""
+    for event in stream_pattern_events(query_input, **kwargs):
+        if event.row is not None:
+            yield event.row
+
+
+def stream_pattern_events(
+    query_input: PatternQueryInput,
+    *,
+    collection_name: str | None = None,
+    database: VectorDataBase | None = None,
+    resolver: CatalogKResolver | None = None,
+) -> Iterator[PatternStreamEvent]:
+    """Yield binding rows and optional raw Milvus hits per value row."""
+    if collection_name is None:
+        collection_name = _collection_name()
+    if database is None:
+        database = _default_vdb()
+    if resolver is None:
+        resolver = _default_resolver()
+    bgp = build_bgp_execution_state(query_input)
+    variables = bgp.variables
+    values = bgp.values
+    search_queries = bgp.search_queries
+    subject = bgp.subject
+    predicate = bgp.predicate
+    obj = bgp.obj
+
     explicit_k = query_input.k
     returned_count = 0
     log_bgp_start(
@@ -328,30 +484,24 @@ def stream_pattern_rows(
         )
         return
 
-    def filter_fn(matches, query_idx):
-        vinfo = (
-            validation_info_list[query_idx]
-            if query_idx < len(validation_info_list)
-            else {}
-        )
-        return filter_matches_to_rows(
-            matches,
-            pattern_subject=subject,
-            pattern_predicate=predicate,
-            pattern_object=obj,
-            validation_info=vinfo,
-            variables=variables,
-            pattern_variable_roles=pattern_variable_roles,
-            value_row=values[query_idx],
-            parse_rdf_triple=parse_rdf_triple,
-            log=False,
-        )
+    filter_fn = make_bgp_filter_fn(bgp)
 
-    def emit_rows(rows: list[dict]) -> Iterator[dict]:
+    def emit_rows(rows: list[dict]) -> Iterator[PatternStreamEvent]:
         nonlocal returned_count
         for row in rows:
             returned_count += 1
-            yield row
+            yield PatternStreamEvent(row=row)
+
+    def emit_raw(value_row_index: int, k_used: int, matches: list[dict]) -> Iterator[PatternStreamEvent]:
+        if not query_input.include_raw_hits:
+            return
+        yield PatternStreamEvent(
+            raw_search=RawSearchResult(
+                value_row_index=value_row_index,
+                k_used=k_used,
+                hits=list(matches),
+            )
+        )
 
     try:
         if explicit_k is not None:
@@ -369,6 +519,7 @@ def stream_pattern_rows(
             for value_row_idx, _value_row in enumerate(values):
                 if value_row_idx < len(vector_results):
                     matches = vector_results[value_row_idx].get("matches", [])
+                    yield from emit_raw(value_row_idx, effective_search_limit, matches)
                     rows, _ids = filter_fn(matches, value_row_idx)
                     yield from emit_rows(rows)
         else:
@@ -410,10 +561,18 @@ def stream_pattern_rows(
                     f"multipliers={mult_s} jaccard={query_input.adaptive_jaccard}"
                 )
 
-            # Emit each value-row's rows as it finalizes (finalization order, not
-            # value-row order) so the client overlaps processing with the server's
-            # remaining adaptive rounds instead of waiting for the slowest query.
-            for _idx, rows in iter_adaptive_batch_search(
+            raw_emitted: set[int] = set()
+
+            # Finalization order, not value-row index order.
+            pending_raw: list[tuple[int, int, list[dict]]] = []
+
+            def _capture_final_round(query_idx: int, k_used: int, matches: list[dict]) -> None:
+                if query_idx in raw_emitted:
+                    return
+                raw_emitted.add(query_idx)
+                pending_raw.append((query_idx, k_used, matches))
+
+            for query_idx, rows in iter_adaptive_batch_search(
                 vdb=database,
                 collection_name=collection_name,
                 search_queries=search_queries,
@@ -423,7 +582,11 @@ def stream_pattern_rows(
                 jaccard_threshold=query_input.adaptive_jaccard,
                 log=bgp_log,
                 stability_count_floors=stability_count_floors,
+                on_final_round=_capture_final_round,
             ):
+                for idx, k_used, matches in pending_raw:
+                    yield from emit_raw(idx, k_used, matches)
+                pending_raw.clear()
                 yield from emit_rows(rows)
 
     except Exception as e:  # noqa: BLE001
@@ -446,7 +609,7 @@ def collect_pattern_rows(
     query_input: PatternQueryInput | dict,
     **kwargs: Any,
 ) -> tuple[list[str], list[dict]]:
-    """Buffer full BGP result (HTTP baseline)."""
+    """Return all BGP binding rows as a list."""
     if isinstance(query_input, dict):
         query_input = PatternQueryInput.from_json(query_input)
     rows = list(stream_pattern_rows(query_input, **kwargs))

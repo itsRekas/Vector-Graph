@@ -8,9 +8,16 @@ from pathlib import Path
 from vector_endpoint.auto_k import CatalogKResolver
 from vector_endpoint.db.VectorDataBase import VectorDataBase
 
-VECTOR_COLLECTION_NAME = "version_5"
+VECTOR_COLLECTION_NAME = os.getenv("VECTOR_COLLECTION", "version_5")
+COMPONENT_FUSION = os.getenv("VECTOR_COMPONENT_FUSION", "concat")
 CATALOG_PATH = Path(
     os.getenv("VECTOR_CATALOG_PATH", Path(__file__).resolve().parents[2] / "catalog.pkl")
+)
+
+print(
+    f"Vector endpoint config: collection={VECTOR_COLLECTION_NAME} "
+    f"target_embedding_dim={os.getenv('VECTOR_TARGET_EMBEDDING_DIM', '384')} "
+    f"component_fusion={COMPONENT_FUSION}"
 )
 
 AUTO_K_RESOLVER = CatalogKResolver(catalog_path=CATALOG_PATH)
@@ -25,6 +32,7 @@ vdb: VectorDataBase | None = VectorDataBase(
     port=int(os.getenv("VECTOR_MILVUS_PORT", "19530")),
     embedding_model=os.getenv("VECTOR_EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
     target_embedding_dim=int(os.getenv("VECTOR_TARGET_EMBEDDING_DIM", "384")),
+    component_fusion=COMPONENT_FUSION,
 )
 
 try:

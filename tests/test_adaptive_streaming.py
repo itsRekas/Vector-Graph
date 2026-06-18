@@ -1,11 +1,4 @@
-"""Tests for incremental adaptive finalization.
-
-Verifies that ``iter_adaptive_batch_search`` emits each value-row's rows as it
-finalizes (selective queries before non-selective ones) and that the buffered
-``adaptive_batch_search`` wrapper still returns the same ``final_rows``.
-
-Runnable without pytest:  ``.venv/bin/python -m unittest discover -s tests``
-"""
+"""Tests for incremental adaptive finalization."""
 
 from __future__ import annotations
 
@@ -69,7 +62,7 @@ class TestAdaptiveStreaming(unittest.TestCase):
             )
         )
         order = [idx for idx, _rows in emitted]
-        # Selective query (0) finalizes first; non-selective (1) only at ladder end.
+        # Selective query (0) finalizes before non-selective (1).
         self.assertEqual(order, [0, 1])
         rows_by_idx = {idx: rows for idx, rows in emitted}
         self.assertEqual(rows_by_idx[0], [{"q": 0, "k": 2}])
@@ -99,7 +92,7 @@ class TestAdaptiveStreaming(unittest.TestCase):
             **COMMON_KWARGS,
         )
         self.assertEqual(final_rows, expected)
-        # Callback fires once per query, in finalization order.
+        # One callback per query, in finalization order.
         self.assertEqual([i for i, _ in callback_calls], [0, 1])
         self.assertEqual([rows for _, rows in callback_calls], expected)
 

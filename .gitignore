@@ -22,7 +22,7 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Virtual Environments
+# Virtual environments
 .venv/
 venv/
 env/
@@ -30,14 +30,14 @@ ENV/
 env.bak/
 venv.bak/
 
-# IDEs and Editors
+# IDEs
 .vscode/
 .idea/
 *.swp
 *.swo
 .cursor/
 
-# OS generated files
+# OS files
 .DS_Store
 .DS_Store?
 ._*
@@ -46,33 +46,43 @@ venv.bak/
 ehthumbs.db
 Thumbs.db
 
-# Docker / Milvus Data Volumes
-# (Ignores the database storage folders so you don't commit gigabytes of Milvus data)
+# Milvus / Docker volumes
 volumes/
 milvus_data/
 etcd_data/
 minio_data/
 
-# Project Specific Data & Checkpoints
+# Catalog checkpoints
 *.pkl
 catalog.pkl
 *.checkpoint.pkl
 
-# Matplotlib / plotting cache (auto-generated when running benchmark plots)
+# Matplotlib cache
 .tmp_mpl/
 .matplotlib/
 .mplcache/
 .mplconfig/
 **/.mplcache/
+**/.mplconfig/
 
-# Ad-hoc LUBM / join debug scripts (local investigation only)
-benchmarks/**/debug_*.py
+# Legacy archive
+archive/
 
-# Generated benchmark & experiment outputs (JSON, CSV, PNG, logs)
+# Benchmark debug scripts
+benchmarks/**/*debug*.py
+
+# Embedding disk cache
+*.npz
+embedding_cache*_meta.json
+
+# Benchmark outputs
 results/**
 **/results/**
 
-# Environment Variables
+# Data load logs
+data/results/
+
+# Environment variables
 .env
 .env.local
 .env.*
@@ -81,7 +91,7 @@ results/**
 *.log
 logs/
 
-# Testing / Coverage
+# Test / coverage
 .tox/
 .coverage
 .coverage.*
@@ -91,6 +101,11 @@ coverage.xml
 *.cover
 .hypothesis/
 .pytest_cache/
+htmlcov/
 
-# VS Code / Cursor Workspace
+# Type checker / linter
+.mypy_cache/
+.ruff_cache/
+
+# Editor workspaces
 *.code-workspace

@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x17vector/v1/pattern.proto\x12\tvector.v1\"C\n\x04Term\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t\x12\x0c\n\x04lang\x18\x03 \x01(\t\x12\x10\n\x08\x64\x61tatype\x18\x04 \x01(\t\"p\n\x07Pattern\x12 \n\x07subject\x18\x01 \x01(\x0b\x32\x0f.vector.v1.Term\x12\"\n\tpredicate\x18\x02 \x01(\x0b\x32\x0f.vector.v1.Term\x12\x1f\n\x06object\x18\x03 \x01(\x0b\x32\x0f.vector.v1.Term\"\x81\x01\n\x08ValueRow\x12\x33\n\x08\x62indings\x18\x01 \x03(\x0b\x32!.vector.v1.ValueRow.BindingsEntry\x1a@\n\rBindingsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x1e\n\x05value\x18\x02 \x01(\x0b\x32\x0f.vector.v1.Term:\x02\x38\x01\"\xd5\x01\n\x13PatternQueryRequest\x12#\n\x07pattern\x18\x01 \x01(\x0b\x32\x12.vector.v1.Pattern\x12\x0c\n\x04vars\x18\x02 \x03(\t\x12#\n\x06values\x18\x03 \x03(\x0b\x32\x13.vector.v1.ValueRow\x12\x0e\n\x01k\x18\x04 \x01(\x05H\x00\x88\x01\x01\x12\x1c\n\x14\x61\x64\x61ptive_multipliers\x18\x05 \x03(\x05\x12\x1d\n\x10\x61\x64\x61ptive_jaccard\x18\x06 \x01(\x01H\x01\x88\x01\x01\x42\x04\n\x02_kB\x13\n\x11_adaptive_jaccard\"\x85\x01\n\nBindingRow\x12\x35\n\x08\x62indings\x18\x01 \x03(\x0b\x32#.vector.v1.BindingRow.BindingsEntry\x1a@\n\rBindingsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x1e\n\x05value\x18\x02 \x01(\x0b\x32\x0f.vector.v1.Term:\x02\x38\x01\"$\n\x14PatternQueryMetadata\x12\x0c\n\x04vars\x18\x01 \x03(\t\"f\n\x10PatternQueryDone\x12\x12\n\ntotal_rows\x18\x01 \x01(\x05\x12\x1b\n\x0ereturned_count\x18\x02 \x01(\x05H\x00\x88\x01\x01\x12\x0e\n\x06k_mode\x18\x03 \x01(\tB\x11\n\x0f_returned_count\"$\n\x11PatternQueryError\x12\x0f\n\x07message\x18\x01 \x01(\t\"\x84\x02\n\x11PatternQueryEvent\x12\x33\n\x08metadata\x18\x01 \x01(\x0b\x32\x1f.vector.v1.PatternQueryMetadataH\x00\x12$\n\x03row\x18\x02 \x01(\x0b\x32\x15.vector.v1.BindingRowH\x00\x12+\n\x04\x64one\x18\x03 \x01(\x0b\x32\x1b.vector.v1.PatternQueryDoneH\x00\x12-\n\x05\x65rror\x18\x04 \x01(\x0b\x32\x1c.vector.v1.PatternQueryErrorH\x00\x12/\n\trow_batch\x18\x05 \x01(\x0b\x32\x1a.vector.v1.BindingRowBatchH\x00\x42\x07\n\x05\x65vent\"6\n\x0f\x42indingRowBatch\x12#\n\x04rows\x18\x01 \x03(\x0b\x32\x15.vector.v1.BindingRow2f\n\x14VectorPatternService\x12N\n\x0cQueryPattern\x12\x1e.vector.v1.PatternQueryRequest\x1a\x1c.vector.v1.PatternQueryEvent0\x01\x42\x02P\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x17vector/v1/pattern.proto\x12\tvector.v1\"C\n\x04Term\x12\x0c\n\x04type\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t\x12\x0c\n\x04lang\x18\x03 \x01(\t\x12\x10\n\x08\x64\x61tatype\x18\x04 \x01(\t\"p\n\x07Pattern\x12 \n\x07subject\x18\x01 \x01(\x0b\x32\x0f.vector.v1.Term\x12\"\n\tpredicate\x18\x02 \x01(\x0b\x32\x0f.vector.v1.Term\x12\x1f\n\x06object\x18\x03 \x01(\x0b\x32\x0f.vector.v1.Term\"\x81\x01\n\x08ValueRow\x12\x33\n\x08\x62indings\x18\x01 \x03(\x0b\x32!.vector.v1.ValueRow.BindingsEntry\x1a@\n\rBindingsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x1e\n\x05value\x18\x02 \x01(\x0b\x32\x0f.vector.v1.Term:\x02\x38\x01\"\x89\x02\n\x13PatternQueryRequest\x12#\n\x07pattern\x18\x01 \x01(\x0b\x32\x12.vector.v1.Pattern\x12\x0c\n\x04vars\x18\x02 \x03(\t\x12#\n\x06values\x18\x03 \x03(\x0b\x32\x13.vector.v1.ValueRow\x12\x0e\n\x01k\x18\x04 \x01(\x05H\x00\x88\x01\x01\x12\x1c\n\x14\x61\x64\x61ptive_multipliers\x18\x05 \x03(\x05\x12\x1d\n\x10\x61\x64\x61ptive_jaccard\x18\x06 \x01(\x01H\x01\x88\x01\x01\x12\x1d\n\x10include_raw_hits\x18\x07 \x01(\x08H\x02\x88\x01\x01\x42\x04\n\x02_kB\x13\n\x11_adaptive_jaccardB\x13\n\x11_include_raw_hits\"U\n\tMilvusHit\x12\x0f\n\x02id\x18\x01 \x01(\x03H\x00\x88\x01\x01\x12\x15\n\x08\x64istance\x18\x02 \x01(\x01H\x01\x88\x01\x01\x12\x0c\n\x04text\x18\x03 \x01(\tB\x05\n\x03_idB\x0b\n\t_distance\"^\n\x0fRawSearchResult\x12\x17\n\x0fvalue_row_index\x18\x01 \x01(\x05\x12\x0e\n\x06k_used\x18\x02 \x01(\x05\x12\"\n\x04hits\x18\x03 \x03(\x0b\x32\x14.vector.v1.MilvusHit\"\x85\x01\n\nBindingRow\x12\x35\n\x08\x62indings\x18\x01 \x03(\x0b\x32#.vector.v1.BindingRow.BindingsEntry\x1a@\n\rBindingsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\x1e\n\x05value\x18\x02 \x01(\x0b\x32\x0f.vector.v1.Term:\x02\x38\x01\"$\n\x14PatternQueryMetadata\x12\x0c\n\x04vars\x18\x01 \x03(\t\"f\n\x10PatternQueryDone\x12\x12\n\ntotal_rows\x18\x01 \x01(\x05\x12\x1b\n\x0ereturned_count\x18\x02 \x01(\x05H\x00\x88\x01\x01\x12\x0e\n\x06k_mode\x18\x03 \x01(\tB\x11\n\x0f_returned_count\"$\n\x11PatternQueryError\x12\x0f\n\x07message\x18\x01 \x01(\t\"\xb6\x02\n\x11PatternQueryEvent\x12\x33\n\x08metadata\x18\x01 \x01(\x0b\x32\x1f.vector.v1.PatternQueryMetadataH\x00\x12$\n\x03row\x18\x02 \x01(\x0b\x32\x15.vector.v1.BindingRowH\x00\x12+\n\x04\x64one\x18\x03 \x01(\x0b\x32\x1b.vector.v1.PatternQueryDoneH\x00\x12-\n\x05\x65rror\x18\x04 \x01(\x0b\x32\x1c.vector.v1.PatternQueryErrorH\x00\x12/\n\trow_batch\x18\x05 \x01(\x0b\x32\x1a.vector.v1.BindingRowBatchH\x00\x12\x30\n\nraw_search\x18\x06 \x01(\x0b\x32\x1a.vector.v1.RawSearchResultH\x00\x42\x07\n\x05\x65vent\"6\n\x0f\x42indingRowBatch\x12#\n\x04rows\x18\x01 \x03(\x0b\x32\x15.vector.v1.BindingRow\"\x8e\x03\n\x12PatternPageRequest\x12\x13\n\x06k_mode\x18\x01 \x01(\tH\x00\x88\x01\x01\x12\x0e\n\x01k\x18\x02 \x01(\x05H\x01\x88\x01\x01\x12\x12\n\x05limit\x18\x03 \x01(\x05H\x02\x88\x01\x01\x12\x13\n\x06\x63ursor\x18\x04 \x01(\tH\x03\x88\x01\x01\x12\x13\n\x06\x63\x61ncel\x18\x05 \x01(\x08H\x04\x88\x01\x01\x12#\n\x07pattern\x18\x06 \x01(\x0b\x32\x12.vector.v1.Pattern\x12\x0c\n\x04vars\x18\x07 \x03(\t\x12#\n\x06values\x18\x08 \x03(\x0b\x32\x13.vector.v1.ValueRow\x12\x1d\n\x10include_raw_hits\x18\t \x01(\x08H\x05\x88\x01\x01\x12\x11\n\x04next\x18\n \x01(\x08H\x06\x88\x01\x01\x12\x11\n\x04page\x18\x0b \x01(\x05H\x07\x88\x01\x01\x12\x14\n\x07session\x18\x0c \x01(\tH\x08\x88\x01\x01\x42\t\n\x07_k_modeB\x04\n\x02_kB\x08\n\x06_limitB\t\n\x07_cursorB\t\n\x07_cancelB\x13\n\x11_include_raw_hitsB\x07\n\x05_nextB\x07\n\x05_pageB\n\n\x08_session\"\xbf\x02\n\x0ePaginationInfo\x12\x13\n\x06\x63ursor\x18\x01 \x01(\tH\x00\x88\x01\x01\x12\x0c\n\x04\x64one\x18\x02 \x01(\x08\x12\t\n\x01k\x18\x03 \x01(\x05\x12\r\n\x05limit\x18\x04 \x01(\x05\x12\x16\n\tcatalog_k\x18\x05 \x01(\x05H\x01\x88\x01\x01\x12\x12\n\npage_index\x18\x06 \x01(\x05\x12\x1d\n\x15milvus_hits_this_page\x18\x07 \x01(\x05\x12\x19\n\x11milvus_hits_total\x18\x08 \x01(\x05\x12\x17\n\x0fvalue_row_index\x18\t \x01(\x05\x12\x0e\n\x06k_mode\x18\n \x01(\t\x12\x17\n\nfrom_cache\x18\x0b \x01(\x08H\x02\x88\x01\x01\x12\x14\n\x07session\x18\x0c \x01(\tH\x03\x88\x01\x01\x42\t\n\x07_cursorB\x0c\n\n_catalog_kB\r\n\x0b_from_cacheB\n\n\x08_session\"\x8b\x02\n\x13PatternPageResponse\x12\x0c\n\x04vars\x18\x01 \x03(\t\x12#\n\x04rows\x18\x02 \x03(\x0b\x32\x15.vector.v1.BindingRow\x12\x32\n\npagination\x18\x03 \x01(\x0b\x32\x19.vector.v1.PaginationInfoH\x00\x88\x01\x01\x12\x33\n\nraw_search\x18\x04 \x01(\x0b\x32\x1a.vector.v1.RawSearchResultH\x01\x88\x01\x01\x12\x30\n\x05\x65rror\x18\x05 \x01(\x0b\x32\x1c.vector.v1.PatternQueryErrorH\x02\x88\x01\x01\x42\r\n\x0b_paginationB\r\n\x0b_raw_searchB\x08\n\x06_error2\xb9\x01\n\x14VectorPatternService\x12N\n\x0cQueryPattern\x12\x1e.vector.v1.PatternQueryRequest\x1a\x1c.vector.v1.PatternQueryEvent0\x01\x12Q\n\x10QueryPatternPage\x12\x1d.vector.v1.PatternPageRequest\x1a\x1e.vector.v1.PatternPageResponseB\x02P\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -45,21 +45,31 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_VALUEROW_BINDINGSENTRY']._serialized_start=287
   _globals['_VALUEROW_BINDINGSENTRY']._serialized_end=351
   _globals['_PATTERNQUERYREQUEST']._serialized_start=354
-  _globals['_PATTERNQUERYREQUEST']._serialized_end=567
-  _globals['_BINDINGROW']._serialized_start=570
-  _globals['_BINDINGROW']._serialized_end=703
+  _globals['_PATTERNQUERYREQUEST']._serialized_end=619
+  _globals['_MILVUSHIT']._serialized_start=621
+  _globals['_MILVUSHIT']._serialized_end=706
+  _globals['_RAWSEARCHRESULT']._serialized_start=708
+  _globals['_RAWSEARCHRESULT']._serialized_end=802
+  _globals['_BINDINGROW']._serialized_start=805
+  _globals['_BINDINGROW']._serialized_end=938
   _globals['_BINDINGROW_BINDINGSENTRY']._serialized_start=287
   _globals['_BINDINGROW_BINDINGSENTRY']._serialized_end=351
-  _globals['_PATTERNQUERYMETADATA']._serialized_start=705
-  _globals['_PATTERNQUERYMETADATA']._serialized_end=741
-  _globals['_PATTERNQUERYDONE']._serialized_start=743
-  _globals['_PATTERNQUERYDONE']._serialized_end=845
-  _globals['_PATTERNQUERYERROR']._serialized_start=847
-  _globals['_PATTERNQUERYERROR']._serialized_end=883
-  _globals['_PATTERNQUERYEVENT']._serialized_start=886
-  _globals['_PATTERNQUERYEVENT']._serialized_end=1146
-  _globals['_BINDINGROWBATCH']._serialized_start=1148
-  _globals['_BINDINGROWBATCH']._serialized_end=1202
-  _globals['_VECTORPATTERNSERVICE']._serialized_start=1204
-  _globals['_VECTORPATTERNSERVICE']._serialized_end=1306
+  _globals['_PATTERNQUERYMETADATA']._serialized_start=940
+  _globals['_PATTERNQUERYMETADATA']._serialized_end=976
+  _globals['_PATTERNQUERYDONE']._serialized_start=978
+  _globals['_PATTERNQUERYDONE']._serialized_end=1080
+  _globals['_PATTERNQUERYERROR']._serialized_start=1082
+  _globals['_PATTERNQUERYERROR']._serialized_end=1118
+  _globals['_PATTERNQUERYEVENT']._serialized_start=1121
+  _globals['_PATTERNQUERYEVENT']._serialized_end=1431
+  _globals['_BINDINGROWBATCH']._serialized_start=1433
+  _globals['_BINDINGROWBATCH']._serialized_end=1487
+  _globals['_PATTERNPAGEREQUEST']._serialized_start=1490
+  _globals['_PATTERNPAGEREQUEST']._serialized_end=1888
+  _globals['_PAGINATIONINFO']._serialized_start=1891
+  _globals['_PAGINATIONINFO']._serialized_end=2210
+  _globals['_PATTERNPAGERESPONSE']._serialized_start=2213
+  _globals['_PATTERNPAGERESPONSE']._serialized_end=2480
+  _globals['_VECTORPATTERNSERVICE']._serialized_start=2483
+  _globals['_VECTORPATTERNSERVICE']._serialized_end=2668
 # @@protoc_insertion_point(module_scope)

@@ -15,9 +15,8 @@ def build_k_ladder(
 ) -> list[int]:
     """Return the ascending list of k values to try for a single query.
 
-    Each rung is `seed_k * m` capped at `milvus_max_topk`. Consecutive
-    duplicates produced by the cap are removed so the ladder naturally ends
-    once we hit the maximum.
+    Each rung is ``seed_k * m`` capped at ``milvus_max_topk``. Consecutive
+    duplicates from the cap are removed so the ladder ends at the maximum.
     """
     if seed_k <= 0:
         seed_k = 1

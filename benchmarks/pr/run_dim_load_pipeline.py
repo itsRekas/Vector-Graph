@@ -10,11 +10,12 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from time import perf_counter
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 from pymilvus import utility
 
 from vector_endpoint.db.VectorDataBase import VectorDataBase
+from vector_endpoint.embedding_disk_cache import meta_path_for_npz
 
 
 @dataclass(frozen=True)
@@ -72,9 +73,35 @@ def parse_args() -> argparse.Namespace:
         choices=["truncate"],
         help="How to adapt model output to target dim (currently only truncate).",
     )
+    parser.add_argument(
+        "--component-fusion",
+        default="concat",
+        choices=["concat", "hadamard"],
+        help="Fuse S|P|O embeddings: concat (3d stored) or hadamard (d stored)",
+    )
     parser.add_argument("--chunk-size", type=int, default=100, help="Chunk size")
     parser.add_argument("--max-lines", type=int, default=None, help="Optional quick-run cap")
     parser.add_argument("--out-dir", default="results", help="Output metadata directory")
+    parser.add_argument(
+        "--embedding-cache-in",
+        default=None,
+        help="Path to precomputed embedding cache .npz for dim loads",
+    )
+    parser.add_argument(
+        "--embedding-cache-out",
+        default=None,
+        help="Path to write embedding cache .npz (precompute at full model dim)",
+    )
+    parser.add_argument(
+        "--embed-cache-only",
+        action="store_true",
+        help="Only build embedding cache + catalog (no Milvus)",
+    )
+    parser.add_argument(
+        "--catalog-in",
+        default=None,
+        help="Shared catalog pickle for cached dim loads",
+    )
     parser.add_argument("--log", action="store_true", help="Verbose logs")
     return parser.parse_args()
 
@@ -84,6 +111,101 @@ def require_safe_collection(collection: str) -> None:
         raise ValueError(
             "Safety guard: this script only allows --collection dim_benchmark."
         )
+
+
+def model_output_dim(embedding_model: str) -> int:
+    vdb = VectorDataBase(
+        database_name="probe",
+        host="localhost",
+        port=19530,
+        embedding_model=embedding_model,
+        target_embedding_dim=384,
+        dim_adjustment="truncate",
+    )
+    return vdb._model_output_dim
+
+
+def build_loader_cmd(dim: int, args: argparse.Namespace, catalog_out: Path) -> List[str]:
+    cmd: List[str] = [
+        sys.executable,
+        "-m",
+        "vector_endpoint.load",
+        args.input_file,
+        "--collection",
+        args.collection,
+        "--database-name",
+        args.database_name,
+        "--host",
+        args.host,
+        "--port",
+        str(args.port),
+        "--embedding-model",
+        args.embedding_model,
+        "--target-embedding-dim",
+        str(dim),
+        "--dim-adjustment",
+        args.dim_adjustment,
+        "--component-fusion",
+        args.component_fusion,
+        "--chunk-size",
+        str(args.chunk_size),
+        "--catalog-out",
+        str(catalog_out),
+    ]
+    if args.max_lines is not None:
+        cmd.extend(["--max-lines", str(args.max_lines)])
+    if args.catalog_in:
+        cmd.extend(["--catalog-in", args.catalog_in])
+    if args.embedding_cache_in:
+        cmd.extend(["--embedding-cache-in", args.embedding_cache_in])
+    if args.embedding_cache_out:
+        cmd.extend(["--embedding-cache-out", args.embedding_cache_out])
+    if args.embed_cache_only:
+        cmd.append("--embed-cache-only")
+    if args.log:
+        cmd.append("--log")
+    return cmd
+
+
+def run_loader_subprocess(cmd: List[str], log: bool) -> tuple[int, str]:
+    proc = subprocess.run(cmd, capture_output=not log, text=True)
+    error = ""
+    if proc.returncode != 0:
+        error = (proc.stderr or proc.stdout or "").strip()
+    return int(proc.returncode), error
+
+
+def ensure_embedding_cache(args: argparse.Namespace, out_dir: Path) -> None:
+    if not args.embedding_cache_in:
+        return
+
+    cache_path = Path(args.embedding_cache_in)
+    meta_path = meta_path_for_npz(cache_path)
+    if cache_path.exists() and meta_path.exists():
+        if args.log:
+            print(f"Embedding cache present: {cache_path}")
+        return
+
+    if args.embed_cache_only:
+        return
+
+    full_dim = model_output_dim(args.embedding_model)
+    shared_catalog = args.catalog_in or str(out_dir / "catalog.pkl")
+    cache_out = str(cache_path)
+
+    print(f"Precomputing embedding cache at dim={full_dim} -> {cache_out}")
+    precompute_args = argparse.Namespace(**vars(args))
+    precompute_args.embed_cache_only = True
+    precompute_args.embedding_cache_out = cache_out
+    precompute_args.embedding_cache_in = None
+    precompute_args.catalog_in = None
+    precompute_args.dimensions = str(full_dim)
+
+    catalog_out = Path(shared_catalog)
+    cmd = build_loader_cmd(full_dim, precompute_args, catalog_out)
+    return_code, error = run_loader_subprocess(cmd, args.log)
+    if return_code != 0:
+        raise RuntimeError(f"Embedding cache precompute failed: {error}")
 
 
 def drop_dim_benchmark_if_exists(
@@ -104,6 +226,7 @@ def drop_dim_benchmark_if_exists(
         embedding_model=embedding_model,
         target_embedding_dim=dim,
         dim_adjustment=dim_adjustment,
+        lazy_embedding_model=True,
     )
     vdb.connect()
     if collection not in set(utility.list_collections()):
@@ -121,54 +244,29 @@ def run_loader_for_dim(dim: int, args: argparse.Namespace, out_dir: Path) -> Loa
     return_code = 1
     error = ""
     start = perf_counter()
-    catalog_out = out_dir / f"catalog_dim{dim}.pkl"
+
+    if args.embed_cache_only:
+        catalog_out = out_dir / "catalog.pkl"
+    else:
+        catalog_out = out_dir / f"catalog_dim{dim}.pkl"
+
     try:
-        dropped_existing = drop_dim_benchmark_if_exists(
-            collection=collection,
-            database_name=args.database_name,
-            host=args.host,
-            port=args.port,
-            embedding_model=args.embedding_model,
-            dim_adjustment=args.dim_adjustment,
-            dim=dim,
-            log=args.log,
-        )
+        if not args.embed_cache_only:
+            dropped_existing = drop_dim_benchmark_if_exists(
+                collection=collection,
+                database_name=args.database_name,
+                host=args.host,
+                port=args.port,
+                embedding_model=args.embedding_model,
+                dim_adjustment=args.dim_adjustment,
+                dim=dim,
+                log=args.log,
+            )
 
-        cmd: List[str] = [
-            sys.executable,
-            "-m",
-            "vector_endpoint.load",
-            args.input_file,
-            "--collection",
-            collection,
-            "--database-name",
-            args.database_name,
-            "--host",
-            args.host,
-            "--port",
-            str(args.port),
-            "--embedding-model",
-            args.embedding_model,
-            "--target-embedding-dim",
-            str(dim),
-            "--dim-adjustment",
-            args.dim_adjustment,
-            "--chunk-size",
-            str(args.chunk_size),
-            "--catalog-out",
-            str(catalog_out),
-        ]
-        if args.max_lines is not None:
-            cmd.extend(["--max-lines", str(args.max_lines)])
-        if args.log:
-            cmd.append("--log")
-
-        proc = subprocess.run(cmd, capture_output=not args.log, text=True)
-        return_code = int(proc.returncode)
+        cmd = build_loader_cmd(dim, args, catalog_out)
+        return_code, error = run_loader_subprocess(cmd, args.log)
         if return_code == 0:
             status = "ok"
-        else:
-            error = (proc.stderr or proc.stdout or "").strip()
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
 
@@ -232,6 +330,11 @@ def main() -> int:
     print(f"Collection: {args.collection}")
     print(f"Dimensions: {dims}")
     print(f"Input file: {args.input_file}")
+
+    if args.embed_cache_only and not args.embedding_cache_out:
+        raise ValueError("--embed-cache-only requires --embedding-cache-out")
+
+    ensure_embedding_cache(args, out_dir)
 
     rows: List[LoadResult] = []
     for dim in dims:

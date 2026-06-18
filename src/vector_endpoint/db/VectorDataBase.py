@@ -18,6 +18,106 @@ import re
 import torch
 import hashlib
 
+from vector_endpoint.component_fusion import (
+    ComponentFusion,
+    fuse_component_batch,
+    parse_component_fusion,
+    stored_embedding_dim,
+)
+
+
+class SearchIteratorHandle:
+    """Wrapper around a Milvus ``search_iterator`` for one query vector."""
+
+    def __init__(
+        self,
+        iterator: object,
+        *,
+        output_fields: List[str],
+        metric_type: str = "COSINE",
+    ) -> None:
+        self._iterator = iterator
+        self._output_fields = list(output_fields)
+        self._metric_type = metric_type
+        self._closed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    @staticmethod
+    def _format_page(
+        page: object,
+        *,
+        output_fields: List[str],
+        metric_type: str,
+    ) -> list[dict]:
+        if page is None:
+            return []
+        if hasattr(page, "ids") and callable(page.ids):
+            ids = page.ids()
+            if not ids:
+                return []
+            distances = page.distances() if hasattr(page, "distances") else []
+            matches: list[dict] = []
+            for idx, entity_id in enumerate(ids):
+                distance = distances[idx] if idx < len(distances) else 0.0
+                match: dict = {
+                    "id": entity_id,
+                    "distance": distance,
+                    "score": 1 - distance if metric_type == "COSINE" else distance,
+                }
+                if hasattr(page, "__getitem__"):
+                    try:
+                        hit = page[idx]
+                        for field in output_fields:
+                            if hasattr(hit, "entity"):
+                                match[field] = hit.entity.get(field)
+                            elif hasattr(hit, "get"):
+                                match[field] = hit.get(field)
+                    except (IndexError, TypeError, KeyError):
+                        pass
+                matches.append(match)
+            return matches
+        if isinstance(page, list):
+            matches = []
+            for hit in page:
+                if hasattr(hit, "to_dict"):
+                    entry = hit.to_dict()
+                    matches.append(entry)
+                    continue
+                if hasattr(hit, "id"):
+                    match = {
+                        "id": hit.id,
+                        "distance": getattr(hit, "distance", 0.0),
+                        "score": 1 - hit.distance if metric_type == "COSINE" else hit.distance,
+                    }
+                    for field in output_fields:
+                        if hasattr(hit, "entity"):
+                            match[field] = hit.entity.get(field)
+                    matches.append(match)
+            return matches
+        return []
+
+    def next_page(self) -> list[dict]:
+        if self._closed:
+            return []
+        page = self._iterator.next()
+        return self._format_page(
+            page,
+            output_fields=self._output_fields,
+            metric_type=self._metric_type,
+        )
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._iterator.close()
+        except Exception:
+            pass
+
 
 class _LruEmbeddingCache:
     """LRU cache for per-component text embeddings (most-recently-used eviction)."""
@@ -68,31 +168,52 @@ class VectorDataBase:
         target_embedding_dim: int,
         dim_adjustment: str = "truncate",
         embedding_cache_size: Optional[int] = None,
+        lazy_embedding_model: bool = False,
+        component_fusion: str = "concat",
     ):
         self._database_name : str = database_name
         self._host : str = host
         self._port : str = str(port)
-        
-        # Enable GPU if available for faster embedding generation
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        print(f"Initializing embedding model on device: {device}")
-        self._embedding_model : SentenceTransformer = SentenceTransformer(embedding_model, device=device)
-        
+        self._embedding_model_name: str = embedding_model
+        self._lazy_embedding_model: bool = lazy_embedding_model
+        self._embedding_model: Optional[SentenceTransformer] = None
+
         self._collections : set[str] = set()
         self._embedding_dim : int  = target_embedding_dim
         self._dim_adjustment: str = dim_adjustment.strip().lower()
-        self._model_output_dim: int = int(self._embedding_model.get_sentence_embedding_dimension())
-        self._validate_dim_configuration()
+        self._model_output_dim: int = target_embedding_dim
+        self._component_fusion: ComponentFusion = parse_component_fusion(component_fusion)
+
+        if lazy_embedding_model:
+            if self._embedding_dim <= 0:
+                raise ValueError(f"target_embedding_dim must be > 0, got {self._embedding_dim}")
+            if self._dim_adjustment != "truncate":
+                raise ValueError(
+                    f"Unsupported dim_adjustment='{self._dim_adjustment}'. "
+                    "Only 'truncate' is currently supported."
+                )
+        else:
+            self._ensure_embedding_model()
         
         # Public properties for schema creation
-        # Concatenated embedding: subject + predicate + object = 3 * embedding_dim
-        self.embedding_dimension = target_embedding_dim * 3
+        self.embedding_dimension = stored_embedding_dim(
+            target_embedding_dim, self._component_fusion
+        )
         
         # LRU cache for frequently reused query components (predicates, types, literals).
         cache_size = embedding_cache_size
         if cache_size is None:
             cache_size = int(os.getenv("VECTOR_EMBEDDING_CACHE_SIZE", "4096"))
         self._embedding_cache = _LruEmbeddingCache(cache_size)
+
+    def _ensure_embedding_model(self) -> SentenceTransformer:
+        if self._embedding_model is None:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            print(f"Initializing embedding model on device: {device}")
+            self._embedding_model = SentenceTransformer(self._embedding_model_name, device=device)
+            self._model_output_dim = int(self._embedding_model.get_sentence_embedding_dimension())
+            self._validate_dim_configuration()
+        return self._embedding_model
 
     def _validate_dim_configuration(self) -> None:
         if self._embedding_dim <= 0:
@@ -112,7 +233,7 @@ class VectorDataBase:
             )
     
     def clear_cache(self):
-        """Clear the embedding cache. Useful for debugging or ensuring fresh embeddings."""
+        """Clear the LRU embedding cache."""
         cache_size = self._embedding_cache.clear()
         print(f"Cleared embedding cache ({cache_size} entries)")
         return cache_size
@@ -223,7 +344,7 @@ class VectorDataBase:
         return f"{subject_str} {predicate_str} {object_str} ."
     
     def _normalize_triple_record(self, triple: Optional[dict], fallback_text: str) -> dict:
-        """Ensure we always have subject/predicate/object fields for downstream processing."""
+        """Ensure subject, predicate, and object fields are present."""
         if not triple:
             return {
                 "subject": fallback_text,
@@ -366,6 +487,7 @@ class VectorDataBase:
             texts: List of strings to encode
             normalize: If True, L2-normalize embeddings to unit vectors (for cosine similarity)
         """
+        model = self._ensure_embedding_model()
         if not texts:
             return np.zeros((0, self._embedding_dim), dtype=float)
         
@@ -385,14 +507,14 @@ class VectorDataBase:
         # Encode texts not in cache
         if texts_to_encode:
             try:
-                new_embeddings = self._embedding_model.encode(
+                new_embeddings = model.encode(
                     texts_to_encode, 
                     convert_to_numpy=True, 
                     show_progress_bar=False,
                     batch_size=32  # Batch for better GPU utilization
                 )
             except TypeError:
-                new_embeddings = self._embedding_model.encode(
+                new_embeddings = model.encode(
                     texts_to_encode, 
                     show_progress_bar=False
                 )
@@ -448,73 +570,70 @@ class VectorDataBase:
             result[original_idx, :] = encoded[i]
         return result
 
+    def _fusion_shape_label(self) -> str:
+        d = self._embedding_dim
+        out = self.embedding_dimension
+        if self._component_fusion == "hadamard":
+            return f"hadamard: S|P|O [{d}] -> [{out}]"
+        return f"concat: S[{d}] + P[{d}] + O[{d}] = [{out}]"
+
     def _embed_triple_batch(self, triples: Sequence[dict], normalize: bool = True) -> np.ndarray:
-        """Embed triples by embedding subject, predicate, object separately and concatenating.
-        
-        Missing/variable components are embedded as zero vectors.
-        
-        Args:
-            triples: List of triple dicts with subject/predicate/object
-            normalize: If True, normalize embeddings (for stored data). 
-                      If False, keep unnormalized (for query search).
-        
-        Returns a numpy array of shape (batch_size, 3 * embedding_dim) where each row is:
-        [embed(subject) | embed(predicate) | embed(object)]
+        """Embed triples by encoding S|P|O separately, then fusing (concat or Hadamard).
+
+        Concat: missing slots are zero-padded. Hadamard: missing slots are identity
+        (product over present slots only).
+
+        Returns shape (batch_size, embedding_dimension).
         """
+        out_dim = self.embedding_dimension
         if not triples:
-            return np.zeros((0, self._embedding_dim * 3), dtype=float)
-        
+            return np.zeros((0, out_dim), dtype=float)
+
         batch_size = len(triples)
-        result = np.zeros((batch_size, self._embedding_dim * 3), dtype=float)
-        
-        # Collect non-empty components for batch encoding
-        subjects = []
-        predicates = []
-        objects = []
-        subject_indices = []
-        predicate_indices = []
-        object_indices = []
-        
+        dim = self._embedding_dim
+        components = np.zeros((batch_size, 3, dim), dtype=float)
+        present = np.zeros((batch_size, 3), dtype=bool)
+
+        slot_texts: List[List[str]] = [[], [], []]
+        slot_indices: List[List[int]] = [[], [], []]
+
         for i, triple in enumerate(triples):
-            # Subject
             subj = triple.get("subject")
             if subj and subj != "":
-                subjects.append(subj)
-                subject_indices.append(i)
-            
-            # Predicate
+                slot_texts[0].append(subj)
+                slot_indices[0].append(i)
+                present[i, 0] = True
+
             pred = triple.get("predicate")
             if pred and pred != "":
-                predicates.append(pred)
-                predicate_indices.append(i)
-            
-            # Object
+                slot_texts[1].append(pred)
+                slot_indices[1].append(i)
+                present[i, 1] = True
+
             obj = triple.get("object")
             obj_type = triple.get("object_type")
             if obj and obj != "":
                 if obj_type == "literal":
-                    objects.append(f"literal:{obj}")
+                    slot_texts[2].append(f"literal:{obj}")
                 else:
-                    objects.append(obj)
-                object_indices.append(i)
-        
-        # Embed non-empty components in batches (unnormalized for queries)
-        if subjects:
-            subject_embeddings = self._encode_text_batch(subjects, normalize=normalize)
-            for idx, orig_idx in enumerate(subject_indices):
-                result[orig_idx, :self._embedding_dim] = subject_embeddings[idx]
-        
-        if predicates:
-            predicate_embeddings = self._encode_text_batch(predicates, normalize=normalize)
-            for idx, orig_idx in enumerate(predicate_indices):
-                result[orig_idx, self._embedding_dim:2*self._embedding_dim] = predicate_embeddings[idx]
-        
-        if objects:
-            object_embeddings = self._encode_text_batch(objects, normalize=normalize)
-            for idx, orig_idx in enumerate(object_indices):
-                result[orig_idx, 2*self._embedding_dim:] = object_embeddings[idx]
-        
-        return result
+                    slot_texts[2].append(obj)
+                slot_indices[2].append(i)
+                present[i, 2] = True
+
+        for slot in range(3):
+            if not slot_texts[slot]:
+                continue
+            encoded = self._encode_text_batch(slot_texts[slot], normalize=normalize)
+            for idx, orig_idx in enumerate(slot_indices[slot]):
+                components[orig_idx, slot, :] = encoded[idx]
+
+        fuse_normalize = normalize and self._component_fusion == "hadamard"
+        return fuse_component_batch(
+            components,
+            present,
+            fusion=self._component_fusion,
+            normalize=fuse_normalize,
+        )
 
     def _compose_triple_text(self, triple: dict) -> str:
         """Generate a human-readable triple string for logging/results."""
@@ -629,11 +748,11 @@ class VectorDataBase:
                 
                 if log:
                     print(f"Generated embeddings shape: {embeddings.shape}")
-                    print(f"  (concatenated: subject[{self._embedding_dim}] + predicate[{self._embedding_dim}] + object[{self._embedding_dim}] = {self._embedding_dim * 3})")
+                    print(f"  ({self._fusion_shape_label()})")
 
                 entities = [
                     chunk_texts,                    # text field (raw triple strings)
-                    embeddings.tolist(),             # embedding field (concatenated)
+                    embeddings.tolist(),             # embedding field (fused S|P|O)
                 ]
 
                 if log:
@@ -769,7 +888,7 @@ class VectorDataBase:
                     print(f"Warning: Collection '{collection_name}' has no indexes. "
                           f"Create indexes on vector fields before loading using create_index().")
             except Exception:
-                pass  # If we can't check indexes, try loading anyway
+                pass  # index metadata unavailable; attempt load anyway
                 
             collection.load()
             if log:
@@ -949,14 +1068,13 @@ class VectorDataBase:
             if collection is None:
                 raise ValueError(f"Collection '{collection_name}' could not be retrieved.")
             
-            # Try to load collection if not already loaded
-            # This will fail gracefully if indexes don't exist
+            # Attempt load; ignore not-loaded errors if indexes exist.
             try:
                 collection.load()
             except MilvusException as e:
                 error_msg = str(e)
                 if "index not found" in error_msg.lower() or "not loaded" in error_msg.lower():
-                    # Check if it's an index issue or just not loaded
+                    # Index missing — surface a clear error.
                     if "index not found" in error_msg.lower():
                         raise ValueError(
                             f"Collection '{collection_name}' is not ready for search. "
@@ -964,7 +1082,7 @@ class VectorDataBase:
                             f"  Use: vdb.create_index('{collection_name}', 'embedding', log=True)\n"
                             f"  Then: vdb.load_data('{collection_name}', log=True)"
                         )
-                    # If it's just "not loaded", try to continue (might work for some operations)
+                    # Not-loaded only — continue; search may still work.
                 # If it's already loaded, that's fine - continue
                 pass
             
@@ -993,14 +1111,14 @@ class VectorDataBase:
             if log:
                 print(f"Searching field: {search_field}")
                 print(f"Query embedding shape: {query_embeddings.shape}")
-                print(f"  (concatenated: subject[{self._embedding_dim}] + predicate[{self._embedding_dim}] + object[{self._embedding_dim}] = {self._embedding_dim * 3})")
-                # Debug: Check if subject is zero vector (variable)
-                for i, q in enumerate(triple_queries):
-                    if q.get('subject') is None:
-                        subject_embedding = query_embeddings[i, :self._embedding_dim]
-                        is_zero = np.allclose(subject_embedding, 0)
-                        print(f"  Query {i+1}: Subject is variable (zero vector: {is_zero}), "
-                              f"predicate={q.get('predicate')}, object={q.get('object')}")
+                print(f"  ({self._fusion_shape_label()})")
+                if self._component_fusion == "concat":
+                    for i, q in enumerate(triple_queries):
+                        if q.get('subject') is None:
+                            subject_embedding = query_embeddings[i, :self._embedding_dim]
+                            is_zero = np.allclose(subject_embedding, 0)
+                            print(f"  Query {i+1}: Subject is variable (zero vector: {is_zero}), "
+                                  f"predicate={q.get('predicate')}, object={q.get('object')}")
             
             if output_fields is None:
                 output_fields = ["text"]
@@ -1021,7 +1139,7 @@ class VectorDataBase:
                 # For IVF index, use nprobe parameter
                 if index_type == 'HNSW':
                     # ef should be >= limit for HNSW, use 2x limit or 50, whichever is larger
-                    ef_value = max(limit * 2, 50)
+                    ef_value = int(max(limit * 2, 50))
                     search_params = {
                         "metric_type": metric_type,
                         "params": {"ef": ef_value}
@@ -1042,7 +1160,7 @@ class VectorDataBase:
                     print(f"Could not determine index type, trying HNSW parameters: {e}")
                 search_params = {
                     "metric_type": metric_type,
-                    "params": {"ef": max(limit * 2, 50)}  # Try HNSW first
+                    "params": {"ef": int(max(limit * 2, 50))}  # Try HNSW first
                 }
                 if log:
                     print(f"Searching with limit={limit}, metric={metric_type}, ef={search_params['params']['ef']} (fallback)")
@@ -1095,6 +1213,130 @@ class VectorDataBase:
             print(f"Unexpected error during search: {e}")
             return []
 
+    def _load_collection_for_search(self, collection_name: str, collection: Collection) -> None:
+        try:
+            collection.load()
+        except MilvusException as e:
+            error_msg = str(e)
+            if "index not found" in error_msg.lower():
+                raise ValueError(
+                    f"Collection '{collection_name}' is not ready for search. "
+                    f"Indexes must be created on vector fields first.\n"
+                    f"  Use: vdb.create_index('{collection_name}', 'embedding', log=True)\n"
+                    f"  Then: vdb.load_data('{collection_name}', log=True)"
+                ) from e
+
+    def _build_search_params(
+        self,
+        collection: Collection,
+        search_field: str,
+        *,
+        limit: int,
+        metric_type: str,
+        nprobe: int,
+        log: bool,
+    ) -> dict:
+        try:
+            indexes = collection.indexes
+            index_type = None
+            if indexes:
+                for idx in indexes:
+                    if idx.field_name == search_field:
+                        index_type = idx.params.get("index_type", "").upper()
+                        break
+            if index_type == "HNSW":
+                ef_value = int(max(limit * 2, 50))
+                search_params = {
+                    "metric_type": metric_type,
+                    "params": {"ef": ef_value},
+                }
+                if log:
+                    print(
+                        f"Searching with limit={limit}, metric={metric_type}, "
+                        f"ef={ef_value} (HNSW index)"
+                    )
+                return search_params
+            search_params = {
+                "metric_type": metric_type,
+                "params": {"nprobe": nprobe},
+            }
+            if log:
+                print(
+                    f"Searching with limit={limit}, metric={metric_type}, "
+                    f"nprobe={nprobe} (IVF/other index)"
+                )
+            return search_params
+        except Exception as e:
+            if log:
+                print(f"Could not determine index type, trying HNSW parameters: {e}")
+            return {
+                "metric_type": metric_type,
+                "params": {"ef": int(max(limit * 2, 50))},
+            }
+
+    def open_search_iterator(
+        self,
+        collection_name: str,
+        query_text: dict,
+        *,
+        batch_size: int,
+        limit: int,
+        field_name: Optional[str] = None,
+        metric_type: str = "COSINE",
+        nprobe: int = 10,
+        output_fields: Optional[List[str]] = None,
+        log: bool = False,
+    ) -> SearchIteratorHandle:
+        """Open a Milvus search iterator for a single query dict."""
+        if not hasattr(Collection, "search_iterator"):
+            raise RuntimeError(
+                "pymilvus Collection.search_iterator is required (install pymilvus>=2.3)"
+            )
+        if collection_name not in self._collections:
+            raise ValueError(f"Collection '{collection_name}' does not exist.")
+        collection = self.get_collection(collection_name)
+        if collection is None:
+            raise ValueError(f"Collection '{collection_name}' could not be retrieved.")
+        self._load_collection_for_search(collection_name, collection)
+
+        triple_queries = self._prepare_query_triples([query_text])
+        if not triple_queries:
+            raise ValueError("query_text could not be prepared for search")
+
+        query_embeddings = self._embed_triple_batch(triple_queries, normalize=True)
+        search_field = field_name or "embedding"
+        if output_fields is None:
+            output_fields = ["text"]
+
+        search_params = self._build_search_params(
+            collection,
+            search_field,
+            limit=max(batch_size, limit),
+            metric_type=metric_type,
+            nprobe=nprobe,
+            log=log,
+        )
+
+        if log:
+            print(
+                f"Opening search_iterator on '{collection_name}' "
+                f"batch_size={batch_size} limit={limit}"
+            )
+
+        iterator = collection.search_iterator(
+            data=query_embeddings.tolist(),
+            anns_field=search_field,
+            param=search_params,
+            batch_size=int(batch_size),
+            limit=int(limit),
+            output_fields=output_fields,
+        )
+        return SearchIteratorHandle(
+            iterator,
+            output_fields=output_fields,
+            metric_type=metric_type,
+        )
+
     def clear_collection(self, collection_name: str, log: bool = False) -> bool:
         """
         Clear all data from a collection (delete all entities).
@@ -1117,7 +1359,7 @@ class VectorDataBase:
             if log:
                 print(f"Clearing collection '{collection_name}'...")
             
-            # Get entity count without loading (doesn't require indexes)
+            # num_entities does not require a loaded collection.
             total_entities = collection.num_entities
             
             if total_entities == 0:
@@ -1129,9 +1371,7 @@ class VectorDataBase:
                 print(f"Current entity count: {total_entities}")
                 print(f"Deleting {total_entities} entities...")
             
-            # Use a simple delete expression that matches all entities
-            # For Int64 primary key 'id', this will match all entities
-            # This approach doesn't require loading the collection or having indexes
+            # Delete by expression; no collection load or index required.
             delete_expr = "id >= 0"  # Matches all entities with id >= 0 (all auto-generated IDs)
             
             collection.delete(delete_expr)
@@ -1169,7 +1409,7 @@ class VectorDataBase:
             if collection_name not in self._collections:
                 if log:
                     print(f"Collection '{collection_name}' does not exist in tracked collections.")
-                return True  # Already doesn't exist
+                return True  # already absent
             
             if log:
                 print(f"Dropping collection '{collection_name}'...")

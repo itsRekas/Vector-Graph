@@ -121,8 +121,7 @@ class Catalog:
         object_value: Optional[str] = None,
     ) -> int:
         # Most specific -> least specific, using available pair/single stats.
-        # If all three terms are bound and SPO tracking is disabled, we estimate
-        # from the tightest available pair count.
+        # Without SPO keys, estimate from the smallest available pair count.
         if subject is not None and predicate is not None and object_value is not None:
             if self.track_spo:
                 return self.spo_counts.get((subject, predicate, object_value), 0)

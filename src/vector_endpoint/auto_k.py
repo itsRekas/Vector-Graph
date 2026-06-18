@@ -64,6 +64,27 @@ def milvus_safe_k(k: int, *, milvus_max_topk: int = 200000) -> int:
     return milvus_max_topk
 
 
+def resolve_pagination_limit(
+    k: int,
+    *,
+    catalog_k: Optional[int],
+    explicit_limit: Optional[int],
+    milvus_max_topk: int = 200000,
+) -> int:
+    """Resolve Milvus search_iterator limit for pagination mode."""
+    safe_k = milvus_safe_k(max(1, int(k)), milvus_max_topk=milvus_max_topk)
+    if explicit_limit is not None:
+        resolved = milvus_safe_k(max(1, int(explicit_limit)), milvus_max_topk=milvus_max_topk)
+        if safe_k > resolved:
+            raise ValueError("pagination k cannot exceed explicit limit")
+        return resolved
+    if catalog_k is not None:
+        default_limit = milvus_safe_k(2 * max(1, int(catalog_k)), milvus_max_topk=milvus_max_topk)
+    else:
+        default_limit = milvus_safe_k(2 * safe_k, milvus_max_topk=milvus_max_topk)
+    return milvus_safe_k(max(default_limit, safe_k), milvus_max_topk=milvus_max_topk)
+
+
 class CatalogKResolver:
     def __init__(
         self,

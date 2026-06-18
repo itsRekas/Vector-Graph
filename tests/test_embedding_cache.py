@@ -1,7 +1,4 @@
-"""Tests for the LRU embedding component cache.
-
-Runnable without pytest:  ``.venv/bin/python -m unittest discover -s tests``
-"""
+"""Tests for the LRU embedding component cache."""
 
 from __future__ import annotations
 

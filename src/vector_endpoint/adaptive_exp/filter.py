@@ -4,7 +4,7 @@ Validates each Milvus hit against the triple pattern and bound values, then
 maps variables to URI/literal terms. Returns result rows plus the set of
 entity ids that passed validation (used as the adaptive k stability key).
 
-``parse_rdf_triple`` is injected to avoid a circular import with ``vector_endpoint.app``.
+``parse_rdf_triple`` is injected to break the import cycle with ``vector_endpoint.app``.
 """
 
 from __future__ import annotations
@@ -12,6 +12,14 @@ from __future__ import annotations
 from typing import Any, Callable, Optional
 
 from vector_endpoint.auto_k import _normalize_literal
+
+
+def _normalize_uri(value: str) -> str:
+    return value.strip().lstrip("<").rstrip(">")
+
+
+def _is_bound_iri_term(term: dict) -> bool:
+    return term.get("type") in ("iri", "uri")
 
 
 def filter_matches_to_rows(
@@ -55,24 +63,22 @@ def filter_matches_to_rows(
             continue
 
         subject_matched = True
-        if isinstance(subject, dict) and subject.get('type') == 'iri':
-            if triple_data['subject'] != subject['value']:
+        if isinstance(subject, dict) and _is_bound_iri_term(subject):
+            if triple_data['subject'] != _normalize_uri(subject['value']):
                 subject_matched = False
         elif subject_value and not subj_is_var:
-            expected_subj = subject_value.lstrip('<').rstrip('>')
-            if triple_data['subject'] != expected_subj:
+            if triple_data['subject'] != _normalize_uri(subject_value):
                 subject_matched = False
 
         if not subject_matched:
             continue
 
         predicate_matched = True
-        if isinstance(predicate, dict) and predicate.get('type') == 'iri':
-            if triple_data['predicate'] != predicate['value']:
+        if isinstance(predicate, dict) and _is_bound_iri_term(predicate):
+            if triple_data['predicate'] != _normalize_uri(predicate['value']):
                 predicate_matched = False
         elif predicate_value and not pred_is_var:
-            expected_pred = predicate_value.lstrip('<').rstrip('>')
-            if triple_data['predicate'] != expected_pred:
+            if triple_data['predicate'] != _normalize_uri(predicate_value):
                 predicate_matched = False
 
         if not predicate_matched:
@@ -87,8 +93,11 @@ def filter_matches_to_rows(
                     or _normalize_literal(triple_data['object']) != expected_lit
                 ):
                     object_matched = False
-            elif obj.get('type') == 'iri':
-                if triple_data['object'] != obj['value'] or triple_data['object_type'] != 'uri':
+            elif obj.get('type') in ('iri', 'uri'):
+                if (
+                    triple_data['object'] != _normalize_uri(obj['value'])
+                    or triple_data['object_type'] != 'uri'
+                ):
                     object_matched = False
         elif object_value and not obj_is_var:
             if validation_info.get("object_type") == "literal":
@@ -99,8 +108,7 @@ def filter_matches_to_rows(
                 ):
                     object_matched = False
             else:
-                expected_obj = object_value.lstrip('<').rstrip('>')
-                if triple_data['object'] != expected_obj:
+                if triple_data['object'] != _normalize_uri(object_value):
                     object_matched = False
 
         if not object_matched:
@@ -145,9 +153,7 @@ def filter_matches_to_rows(
         if row:
             results_rows.append(row)
 
-    # Fully bound patterns: Comunica may send vars=[] (ASK-style existence check).
-    # Vector search can still find the triple, but no variables => empty row dict.
-    # Return one empty binding so the join engine can continue on success.
+    # Fully bound pattern with empty vars (ASK-style): emit one empty row on success.
     if not variables and filtered_ids and not results_rows:
         results_rows.append({})
 

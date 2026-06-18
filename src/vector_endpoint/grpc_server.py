@@ -9,8 +9,21 @@ import grpc
 
 from vector_endpoint.grpc_gen.vector.v1 import pattern_pb2, pattern_pb2_grpc
 from vector_endpoint.bgp_log import log_grpc_pattern_received, log_grpc_rpc_received
-from vector_endpoint.pattern_query import stream_pattern_rows
-from vector_endpoint.proto_convert import pattern_query_input_from_proto, row_to_proto
+from vector_endpoint.pagination_search import resolve_pagination_page, start_pagination_page
+from vector_endpoint.pagination_sessions import (
+    PaginationPageNotCached,
+    PaginationSessionGone,
+    PaginationSessionNotFound,
+    resolve_session_id,
+)
+from vector_endpoint.pattern_query import PatternQueryInput, stream_pattern_events
+from vector_endpoint.proto_convert import (
+    pattern_page_request_to_json,
+    pattern_page_result_to_proto,
+    pattern_query_input_from_proto,
+    raw_search_to_proto,
+    row_to_proto,
+)
 
 
 def _row_batch_size() -> int:
@@ -49,9 +62,16 @@ class VectorPatternServicer(pattern_pb2_grpc.VectorPatternServiceServicer):
         batch: list[pattern_pb2.BindingRow] = []
 
         try:
-            for row in stream_pattern_rows(query_input):
+            for event in stream_pattern_events(query_input):
+                if event.raw_search is not None:
+                    yield pattern_pb2.PatternQueryEvent(
+                        raw_search=raw_search_to_proto(event.raw_search)
+                    )
+                    continue
+                if event.row is None:
+                    continue
                 total += 1
-                batch.append(row_to_proto(row))
+                batch.append(row_to_proto(event.row))
                 if len(batch) >= batch_size:
                     yield pattern_pb2.PatternQueryEvent(
                         row_batch=pattern_pb2.BindingRowBatch(rows=batch)
@@ -74,6 +94,54 @@ class VectorPatternServicer(pattern_pb2_grpc.VectorPatternServiceServicer):
             )
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(str(exc))
+
+    def QueryPatternPage(self, request, context):  # noqa: N802
+        try:
+            json_data = pattern_page_request_to_json(request)
+            session_id = resolve_session_id(json_data)
+            if session_id:
+                page_num: int | None = None
+                if json_data.get("page") is not None:
+                    page_num = int(json_data["page"])
+                page = resolve_pagination_page(
+                    session_id,
+                    page=page_num,
+                    cancel=bool(json_data.get("cancel")),
+                )
+            else:
+                query_input = PatternQueryInput.from_json(json_data)
+                page = start_pagination_page(query_input)
+            return pattern_page_result_to_proto(page)
+        except PaginationPageNotCached as exc:
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            context.set_details(str(exc))
+            return pattern_pb2.PatternPageResponse(
+                error=pattern_pb2.PatternQueryError(message=str(exc))
+            )
+        except PaginationSessionNotFound as exc:
+            context.set_code(grpc.StatusCode.NOT_FOUND)
+            context.set_details(str(exc))
+            return pattern_pb2.PatternPageResponse(
+                error=pattern_pb2.PatternQueryError(message=str(exc))
+            )
+        except PaginationSessionGone as exc:
+            context.set_code(grpc.StatusCode.FAILED_PRECONDITION)
+            context.set_details(str(exc))
+            return pattern_pb2.PatternPageResponse(
+                error=pattern_pb2.PatternQueryError(message=str(exc))
+            )
+        except ValueError as exc:
+            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+            context.set_details(str(exc))
+            return pattern_pb2.PatternPageResponse(
+                error=pattern_pb2.PatternQueryError(message=str(exc))
+            )
+        except Exception as exc:  # noqa: BLE001
+            context.set_code(grpc.StatusCode.INTERNAL)
+            context.set_details(str(exc))
+            return pattern_pb2.PatternPageResponse(
+                error=pattern_pb2.PatternQueryError(message=str(exc))
+            )
 
 
 def create_grpc_server() -> grpc.Server:

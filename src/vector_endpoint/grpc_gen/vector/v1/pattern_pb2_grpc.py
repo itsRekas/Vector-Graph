@@ -5,7 +5,7 @@ import warnings
 
 from vector_endpoint.grpc_gen.vector.v1 import pattern_pb2 as vector_dot_v1_dot_pattern__pb2
 
-GRPC_GENERATED_VERSION = '1.81.0'
+GRPC_GENERATED_VERSION = '1.81.1'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 
@@ -39,12 +39,23 @@ class VectorPatternServiceStub:
                 request_serializer=vector_dot_v1_dot_pattern__pb2.PatternQueryRequest.SerializeToString,
                 response_deserializer=vector_dot_v1_dot_pattern__pb2.PatternQueryEvent.FromString,
                 _registered_method=True)
+        self.QueryPatternPage = channel.unary_unary(
+                '/vector.v1.VectorPatternService/QueryPatternPage',
+                request_serializer=vector_dot_v1_dot_pattern__pb2.PatternPageRequest.SerializeToString,
+                response_deserializer=vector_dot_v1_dot_pattern__pb2.PatternPageResponse.FromString,
+                _registered_method=True)
 
 
 class VectorPatternServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def QueryPattern(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def QueryPatternPage(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -57,6 +68,11 @@ def add_VectorPatternServiceServicer_to_server(servicer, server):
                     servicer.QueryPattern,
                     request_deserializer=vector_dot_v1_dot_pattern__pb2.PatternQueryRequest.FromString,
                     response_serializer=vector_dot_v1_dot_pattern__pb2.PatternQueryEvent.SerializeToString,
+            ),
+            'QueryPatternPage': grpc.unary_unary_rpc_method_handler(
+                    servicer.QueryPatternPage,
+                    request_deserializer=vector_dot_v1_dot_pattern__pb2.PatternPageRequest.FromString,
+                    response_serializer=vector_dot_v1_dot_pattern__pb2.PatternPageResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -86,6 +102,33 @@ class VectorPatternService:
             '/vector.v1.VectorPatternService/QueryPattern',
             vector_dot_v1_dot_pattern__pb2.PatternQueryRequest.SerializeToString,
             vector_dot_v1_dot_pattern__pb2.PatternQueryEvent.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def QueryPatternPage(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/vector.v1.VectorPatternService/QueryPatternPage',
+            vector_dot_v1_dot_pattern__pb2.PatternPageRequest.SerializeToString,
+            vector_dot_v1_dot_pattern__pb2.PatternPageResponse.FromString,
             options,
             channel_credentials,
             insecure,
