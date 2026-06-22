@@ -25,6 +25,26 @@ from vector_endpoint.component_fusion import (
     stored_embedding_dim,
 )
 
+_VALID_EMBEDDING_DEVICES = frozenset({"cuda", "mps", "cpu"})
+
+
+def _resolve_embedding_device() -> str:
+    """Torch device for SentenceTransformer (cuda, mps, or cpu)."""
+    override = os.getenv("VECTOR_DEVICE", "").strip().lower()
+    if override:
+        if override not in _VALID_EMBEDDING_DEVICES:
+            raise ValueError(
+                f"VECTOR_DEVICE must be one of {sorted(_VALID_EMBEDDING_DEVICES)}, "
+                f"got {override!r}"
+            )
+        return override
+    if torch.cuda.is_available():
+        return "cuda"
+    mps_backend = getattr(torch.backends, "mps", None)
+    if mps_backend is not None and mps_backend.is_available():
+        return "mps"
+    return "cpu"
+
 
 class SearchIteratorHandle:
     """Wrapper around a Milvus ``search_iterator`` for one query vector."""
@@ -208,12 +228,19 @@ class VectorDataBase:
 
     def _ensure_embedding_model(self) -> SentenceTransformer:
         if self._embedding_model is None:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
+            device = _resolve_embedding_device()
             print(f"Initializing embedding model on device: {device}")
             self._embedding_model = SentenceTransformer(self._embedding_model_name, device=device)
             self._model_output_dim = int(self._embedding_model.get_sentence_embedding_dimension())
             self._validate_dim_configuration()
         return self._embedding_model
+
+    @property
+    def embedding_device(self) -> Optional[str]:
+        """Torch device for the loaded embedding model (e.g. mps, cuda, cpu)."""
+        if self._embedding_model is None:
+            return None
+        return str(self._embedding_model.device)
 
     def _validate_dim_configuration(self) -> None:
         if self._embedding_dim <= 0:

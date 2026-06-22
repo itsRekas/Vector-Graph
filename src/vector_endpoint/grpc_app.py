@@ -9,6 +9,7 @@ import sys
 
 from vector_endpoint.bgp_log import configure_bgp_logging
 from vector_endpoint.grpc_server import create_grpc_server
+from vector_endpoint.server_state import vdb  # noqa: F401 — eager Milvus + embedding init
 
 
 def _port_in_use(port: int) -> bool:

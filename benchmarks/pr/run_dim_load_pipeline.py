@@ -66,7 +66,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--database-name", default="lubm_db", help="Database label")
     parser.add_argument("--host", default="localhost", help="Milvus host")
     parser.add_argument("--port", type=int, default=19530, help="Milvus port")
-    parser.add_argument("--embedding-model", default="all-MiniLM-L6-v2", help="Embedding model")
+    # parser.add_argument("--embedding-model", default="all-MiniLM-L6-v2", help="Embedding model")
+    parser.add_argument(
+        "--embedding-model",
+        default="mixedbread-ai/mxbai-embed-xsmall-v1",
+        help="Embedding model",
+    )
     parser.add_argument(
         "--dim-adjustment",
         default="truncate",

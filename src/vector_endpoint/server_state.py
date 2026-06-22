@@ -30,7 +30,8 @@ vdb: VectorDataBase | None = VectorDataBase(
     database_name="lubm_db",
     host=os.getenv("VECTOR_MILVUS_HOST", "localhost"),
     port=int(os.getenv("VECTOR_MILVUS_PORT", "19530")),
-    embedding_model=os.getenv("VECTOR_EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
+    # embedding_model=os.getenv("VECTOR_EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
+    embedding_model=os.getenv("VECTOR_EMBEDDING_MODEL", "mixedbread-ai/mxbai-embed-xsmall-v1"),
     target_embedding_dim=int(os.getenv("VECTOR_TARGET_EMBEDDING_DIM", "384")),
     component_fusion=COMPONENT_FUSION,
 )
